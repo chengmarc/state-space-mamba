@@ -14,32 +14,66 @@ from torch import nn
 # %%
 class SimpleLSTM(nn.Module):
     
-    def __init__(self, input_size, hidden_size, output_size, dropout_rate):
+    def __init__(self, input_dimension, hidden_size, output_length, dropout_rate, num_layers=10):
         
-        super(SimpleLSTM, self).__init__()
-        self.lstm1 = nn.LSTM(input_size, hidden_size, batch_first=True)
-        self.lstm2 = nn.LSTM(hidden_size, hidden_size, batch_first=True)
+        super(SimpleLSTM, self).__init__()        
+        self.num_layers = num_layers
+        
+        # Stacked LSTM layers
+        self.lstm_layers = nn.ModuleList([
+            nn.LSTM(input_dimension if i == 0 else hidden_size, hidden_size, batch_first=True)
+            for i in range(num_layers)
+        ])
+        
+        # Residual connections for each LSTM
+        self.residual_layers = nn.ModuleList([
+            nn.Linear(input_dimension if i == 0 else hidden_size, hidden_size) if (i == 0 or input_dimension != hidden_size) else nn.Identity()
+            for i in range(num_layers)
+        ])
+        
+        # Normalization layers for each LSTM
+        self.layer_norms = nn.ModuleList([
+            nn.LayerNorm(hidden_size) for _ in range(num_layers)
+        ])
+        
+        # Dropout and final fully connected layer
         self.dropout = nn.Dropout(dropout_rate)
-        self.layer_norm = nn.LayerNorm(hidden_size)
-        self.fc = nn.Linear(hidden_size, output_size)
+        self.fc = nn.Linear(hidden_size, output_length)
+        self.activation = nn.ReLU()
 
     def forward(self, x):
         
-        out, _ = self.lstm1(x)
-        out, _ = self.lstm2(out)
+        out = x
+        for i in range(self.num_layers):
+            
+            # LSTM layer
+            lstm_out, _ = self.lstm_layers[i](out)
+            
+            # Residual connection
+            res = self.residual_layers[i](out)
+            lstm_out = lstm_out + res
+            
+            # Normalization and activation
+            lstm_out = self.layer_norms[i](lstm_out)
+            lstm_out = self.activation(lstm_out)
+            
+            # Update for next layer
+            out = lstm_out
+            
         out = self.dropout(out[:, -1, :])
-        out = self.layer_norm(out)
         out = self.fc(out)
         return out
-
+    
 
 def create_model(data, forecast_horizon, device):
     
-    input_size = len(data.columns)
+    input_dimension = len(data.columns)
+    output_length = forecast_horizon
+    
     hidden_size = 50
-    output_size = forecast_horizon
     dropout_rate = 0.05
     
-    model = SimpleLSTM(input_size, hidden_size, output_size, dropout_rate).to(device)
+    model = SimpleLSTM(input_dimension, hidden_size, output_length, dropout_rate).to(device)
+    print("Simple LSTM model successfully initialized.")
     return model
 

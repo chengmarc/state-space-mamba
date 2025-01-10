@@ -18,7 +18,7 @@ def create_dataloader(data, historic_horizon, forecast_horizon, device, debug=Fa
 
     X, y = [], []
     for i in range(len(data) - historic_horizon - forecast_horizon + 1):
-        inputs, targets = data[:], data[['LogPriceUSD']]
+        inputs, targets = data[:], data.iloc[:, -1]
         X.append(inputs[i:(i + historic_horizon)].values)  # All columns as input features
         y.append(targets[(i + historic_horizon):(i + historic_horizon + forecast_horizon)].values)  # Last column as target
 
@@ -30,6 +30,9 @@ def create_dataloader(data, historic_horizon, forecast_horizon, device, debug=Fa
     batch_size = 32
     dataset = TensorDataset(X_tensor, y_tensor)
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    print(f"Inputs shape: {X.shape}")
+    print(f"Targets shape: {y.shape}")
     
     if debug: return (X, y)
     else: return dataloader

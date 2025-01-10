@@ -19,58 +19,57 @@ print(f"Using device: {device}")
 
 
 # %%
-data = pd.read_csv('btc.csv')
-data = data[365*2:-1]
-
-data['Date'] = pd.to_datetime(data['time'])
-data.set_index('Date', inplace=True)
-
-data['Difficulty'] = np.log(data['DiffLast'])
-data['Transaction Count'] = np.log(data['TxCnt'])
-data['Active Addresses Count'] = np.log(data['AdrActCnt'])
-
-data['30 Day Active Supply'] = np.log(data['SplyAct30d'])-10
-data['1 Year Active Supply'] = np.log(data['SplyAct1yr'])-10
-data['CurrentSupply'] = np.log(data['SplyCur'])-10
-data['LogPriceUSD'] = np.log(data['PriceUSD'])
-
-data = data[['Difficulty', 'Transaction Count', 'Active Addresses Count', '30 Day Active Supply', '1 Year Active Supply', 'CurrentSupply', 'LogPriceUSD']]
-data.fillna(0, inplace=True)
-
-
-# %%
 historic_horizon = 4 * 365  # Use the last 4 years to predict
 forecast_horizon = 365  # Predict the next year
+
+from DataPreparation import data
 
 from DataLoader import create_dataloader
 dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
 
-from SimpleLSTM import create_model
+from Seq2SeqLSTM import create_model
 model = create_model(data, forecast_horizon, device)
 
 
 # %%
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=10)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0000001)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.8, patience=25)
 
 model.train()
-epochs = 500
+epochs = 1000
 for epoch in range(epochs):
-    for X_batch, y_batch in dataloader:
+    for inputs, targets in dataloader:        
         optimizer.zero_grad()
-        predictions = model(X_batch)
         
-        # Squeeze y_batch to remove the extra dimension
-        y_batch = y_batch.squeeze(-1)  # Remove the last dimension (365, 1 -> 365)
+        outputs = model(inputs)
+        outputs = outputs.squeeze(-1)        
+        targets = targets.squeeze(-1)
         
-        # Compute the loss
-        loss = criterion(predictions, y_batch)
+        loss = criterion(outputs, targets)
         loss.backward()
+
+        # Gradient clipping (optional, for LSTMs)
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
         optimizer.step()
         
     scheduler.step(loss)
-    print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}, LR: {optimizer.param_groups[0]['lr']:.6f}")
+    print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}, LR: {optimizer.param_groups[0]['lr']:.8f}")
+
+
+# %%
+if not os.path.exists('model'):
+    os.makedirs('model')
+
+torch.save(model.state_dict(), f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt')
+print(f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt Saved.')
+
+model_list = [f'./model/{x}' for x in os.listdir('./model')]
+if model_list:
+    model_list.sort(key=lambda x: os.path.getmtime(x))
+    model.load_state_dict(torch.load(model_list[-1])) #load latest model
+    print(f'{model_list[-1]} Loaded.')
 
 
 # %%
