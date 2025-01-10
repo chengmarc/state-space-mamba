@@ -14,7 +14,7 @@ from torch import nn
 # %%
 class SimpleLSTM(nn.Module):
     
-    def __init__(self, input_dimension, hidden_size, output_length, dropout_rate, num_layers=10):
+    def __init__(self, input_dimension, hidden_size, output_length, dropout_rate, num_layers):
         
         super(SimpleLSTM, self).__init__()        
         self.num_layers = num_layers
@@ -72,8 +72,9 @@ def create_model(data, forecast_horizon, device):
     
     hidden_size = 50
     dropout_rate = 0.05
+    num_layers = 3
     
-    model = SimpleLSTM(input_dimension, hidden_size, output_length, dropout_rate).to(device)
+    model = SimpleLSTM(input_dimension, hidden_size, output_length, dropout_rate, num_layers).to(device)
     print("Simple LSTM model successfully initialized.")
     return model
 

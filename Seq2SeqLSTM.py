@@ -55,7 +55,7 @@ def create_model(data, forecast_horizon, device):
     
     hidden_size = 50
     dropout_rate = 0.05
-    num_layers = 3
+    num_layers = 5
     
     model = Seq2SeqLSTM(input_dimension, hidden_size, output_length, dropout_rate, num_layers).to(device)
     print("Seq2Seq LSTM model successfully initialized.")
