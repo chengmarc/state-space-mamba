@@ -19,16 +19,17 @@ print(f"Using device: {device}")
 
 
 # %%
-historic_horizon = 4 * 365  # Use the last 4 years to predict
+historic_horizon = 8 * 365  # Use the last 4 years to predict
 forecast_horizon = 365  # Predict the next year
 
 from DataPreparation import data
-
 from DataLoader import create_dataloader
 dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
 
 from TimeSeriesTransformer import create_model
 model = create_model(data, forecast_horizon, device)
+force_teaching = "Transformer" in model.__class__.__name__
+model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple GPUs
 
 
 # %% 
@@ -50,10 +51,8 @@ for epoch in range(epochs):
     for inputs, targets in dataloader:        
         optimizer.zero_grad()
         
-        if "Transformer" in model.__class__.__name__:
-            outputs = model(inputs, torch.zeros_like(inputs))
-        else: 
-            outputs = model(inputs)
+        if force_teaching: outputs = model(inputs, torch.zeros_like(inputs))
+        else: outputs = model(inputs)
             
         outputs = outputs.squeeze(-1)        
         targets = targets.squeeze(-1)
@@ -80,30 +79,32 @@ print(f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt Saved.')
 
 # %%
 model.eval()
-timeback = 200
-with torch.no_grad():
-    predictions = []
-    past = torch.tensor(data.iloc[-historic_horizon-timeback:-timeback, :].values, dtype=torch.float32).unsqueeze(0).to(device)
-    
-    if "Transformer" in model.__class__.__name__:
-        pred = model(past, torch.zeros_like(past))
-    else:
-        outputs = model(inputs)
+
+timerange = list(range(1, 2200, 20))
+timerange.reverse()
+
+for timeback in timerange:
+    with torch.no_grad():
+        predictions = []
+        past = torch.tensor(data.iloc[-historic_horizon-timeback:-timeback, :].values, dtype=torch.float32).unsqueeze(0).to(device)
         
-    predictions.append(pred.cpu().numpy().flatten())  # Flatten the prediction and move to CPU for further processing
-    predictions = np.array(predictions).flatten()
+        if force_teaching: pred = model(past, torch.zeros_like(past))
+        else: outputs = model(inputs)
+            
+        predictions.append(pred.cpu().numpy().flatten())  # Flatten the prediction and move to CPU for further processing
+        predictions = np.array(predictions).flatten()
 
-# Create DataFrame for predictions
-predicted_dates = pd.date_range(start=data.index[-1-timeback] + pd.Timedelta(days=1), periods=len(predictions))
-predicted_price = pd.DataFrame(predictions, index=predicted_dates, columns=['Predicted PriceUSD'])
+    # Create DataFrame for predictions
+    predicted_dates = pd.date_range(start=data.index[-1-timeback] + pd.Timedelta(days=1), periods=len(predictions))
+    predicted_price = pd.DataFrame(predictions, index=predicted_dates, columns=['Predicted PriceUSD'])
 
-# Plot results
-plt.figure(figsize=(14, 7))
-plt.plot(data.index[-historic_horizon:], data['LogPriceUSD'][-historic_horizon:], label='Log PriceUSD', color='blue')
-plt.plot(predicted_price.index, predicted_price['Predicted PriceUSD'], label='Predicted PriceUSD (Next 365 Days)', color='red')
-plt.title('Actual vs Predicted PriceUSD for Next 365 Days')
-plt.xlabel('Date')
-plt.ylabel('PriceUSD')
-plt.legend()
-plt.show()
+    # Plot results
+    plt.figure(figsize=(14, 7))
+    plt.plot(data.index[-historic_horizon:], data['LogPriceUSD'][-historic_horizon:], label='Log PriceUSD', color='blue')
+    plt.plot(predicted_price.index, predicted_price['Predicted PriceUSD'], label='Predicted PriceUSD (Next 365 Days)', color='red')
+    plt.title('Actual vs Predicted PriceUSD for Next 365 Days')
+    plt.xlabel('Date')
+    plt.ylabel('PriceUSD')
+    plt.legend()
+    plt.show()
 

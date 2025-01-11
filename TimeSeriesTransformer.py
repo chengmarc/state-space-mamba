@@ -4,10 +4,14 @@ Created on Fri Jan 10 21:12:54 2025
 
 @author: Admin
 """
-import torch
+import os
+script_path = os.path.dirname(os.path.realpath(__file__))
+os.chdir(script_path)
+
 import torch.nn as nn
 
 
+# %%
 class TimeSeriesTransformer(nn.Module):
     
     def __init__(self, input_dimension, output_length, dropout_rate, num_layers, d_model, nhead):
@@ -50,12 +54,13 @@ def create_model(data, forecast_horizon, device):
     
     input_dimension = len(data.columns)
     output_length = forecast_horizon
-    dropout_rate = 0.02
+    dropout_rate = 0
     
-    num_layers = 3
-    d_model = 4
-    nhead = 2
+    num_layers = 5
+    d_model = 128
+    nhead = 8
 
     model = TimeSeriesTransformer(input_dimension, output_length, dropout_rate, num_layers, d_model, nhead).to(device)
+    print("Time Series Transformer model successfully initialized.")
     return model
 
