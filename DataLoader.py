@@ -22,7 +22,7 @@ def create_dataloader(data, historic_horizon, forecast_horizon, device, debug=Fa
         X.append(inputs[i:(i + historic_horizon)].values)  # All columns as input features
         y.append(targets[(i + historic_horizon):(i + historic_horizon + forecast_horizon)].values)  # Last column as target
 
-    X, y = np.array(X), np.array(y)
+    X, y = np.array(X), np.expand_dims(np.array(y), -1)
 
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
     y_tensor = torch.tensor(y, dtype=torch.float32).to(device)

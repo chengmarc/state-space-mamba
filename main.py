@@ -19,22 +19,30 @@ print(f"Using device: {device}")
 
 
 # %%
-historic_horizon = 365  # Use the last 4 years to predict
-forecast_horizon = 30  # Predict the next year
+historic_horizon = 4 * 365  # Use the last 4 years to predict
+forecast_horizon = 365  # Predict the next year
 
 from DataPreparation import data
 
 from DataLoader import create_dataloader
 dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
 
-from Seq2SeqLSTM import create_model
+from TimeSeriesTransformer import create_model
 model = create_model(data, forecast_horizon, device)
+
+
+# %% 
+model_list = [f'./model/{x}' for x in os.listdir('./model')]
+if model_list:
+    model_list.sort(key=lambda x: os.path.getmtime(x))
+    model.load_state_dict(torch.load(model_list[-1])) #load latest model
+    print(f'{model_list[-1]} Loaded.')
 
 
 # %%
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.8, patience=10)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
 model.train()
 epochs = 1000
@@ -42,7 +50,11 @@ for epoch in range(epochs):
     for inputs, targets in dataloader:        
         optimizer.zero_grad()
         
-        outputs = model(inputs)
+        if "Transformer" in model.__class__.__name__:
+            outputs = model(inputs, torch.zeros_like(inputs))
+        else: 
+            outputs = model(inputs)
+            
         outputs = outputs.squeeze(-1)        
         targets = targets.squeeze(-1)
         
@@ -50,7 +62,7 @@ for epoch in range(epochs):
         loss.backward()
 
         # Gradient clipping (optional, for LSTMs)
-        #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
         
@@ -65,20 +77,19 @@ if not os.path.exists('model'):
 torch.save(model.state_dict(), f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt')
 print(f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt Saved.')
 
-model_list = [f'./model/{x}' for x in os.listdir('./model')]
-if model_list:
-    model_list.sort(key=lambda x: os.path.getmtime(x))
-    model.load_state_dict(torch.load(model_list[-1])) #load latest model
-    print(f'{model_list[-1]} Loaded.')
-
 
 # %%
 model.eval()
-timeback = 30
+timeback = 200
 with torch.no_grad():
     predictions = []
     past = torch.tensor(data.iloc[-historic_horizon-timeback:-timeback, :].values, dtype=torch.float32).unsqueeze(0).to(device)
-    pred = model(past)
+    
+    if "Transformer" in model.__class__.__name__:
+        pred = model(past, torch.zeros_like(past))
+    else:
+        outputs = model(inputs)
+        
     predictions.append(pred.cpu().numpy().flatten())  # Flatten the prediction and move to CPU for further processing
     predictions = np.array(predictions).flatten()
 

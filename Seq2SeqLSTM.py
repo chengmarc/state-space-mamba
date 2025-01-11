@@ -20,8 +20,8 @@ class Seq2SeqLSTM(nn.Module):
         super(Seq2SeqLSTM, self).__init__()        
         self.output_length = output_length
         
-        self.encoder_lstm = nn.LSTM(input_dimension, hidden_size, num_layers, batch_first=True, dropout=dropout_rate)
-        self.decoder_lstm = nn.LSTM(1, hidden_size, num_layers, batch_first=True, dropout=dropout_rate)
+        self.encoder_lstm = nn.LSTM(input_dimension, hidden_size, num_layers, batch_first=True)
+        self.decoder_lstm = nn.LSTM(1, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, 1)
         self.dropout = nn.Dropout(dropout_rate)
 
@@ -53,9 +53,9 @@ def create_model(data, forecast_horizon, device):
     input_dimension = len(data.columns)
     output_length = forecast_horizon
     
-    hidden_size = 50
+    hidden_size = 128
     dropout_rate = 0.05
-    num_layers = 5
+    num_layers = 16
     
     model = Seq2SeqLSTM(input_dimension, hidden_size, output_length, dropout_rate, num_layers).to(device)
     print("Seq2Seq LSTM model successfully initialized.")
