@@ -24,7 +24,7 @@ from DataTransformation import data_transform
 
 all_data = []
 for column in data.columns:
-    all_data.append(data_transform(data, str(column), plot=False))
+    all_data.append(data_transform(data, str(column), plot=True))
 all_data = pd.concat(all_data, axis=1)
 all_data.to_csv('residuals.csv')
 
