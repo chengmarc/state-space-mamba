@@ -19,10 +19,27 @@ print(f"Using device: {device}")
 
 
 # %%
-historic_horizon = 8 * 365  # Use the last 4 years to predict
+from DataPreparation import data  
+from DataTransformation import data_transform
+
+all_data = []
+for column in data.columns:
+    all_data.append(data_transform(data, str(column), plot=False))
+all_data = pd.concat(all_data, axis=1)
+all_data.to_csv('residuals.csv')
+
+data = all_data[['Difficulty_residuals', 
+                 'Transaction Count_scaled_residuals', 
+                 'Active Addresses Count_residuals',
+                 '30 Day Active Supply_scaled_residuals',
+                 '1 Year Active Supply_residuals',
+                 'LogPriceUSD_scaled_residuals']]
+
+
+# %%
+historic_horizon = 4 * 365  # Use the last 8 years to predict
 forecast_horizon = 365  # Predict the next year
 
-from DataPreparation import data
 from DataLoader import create_dataloader
 dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
 
