@@ -41,7 +41,8 @@ dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device,
 
 from MambaSSM import create_model
 model = create_model(data, forecast_horizon, device)
-force_teaching = "Transformer" in model.__class__.__name__
+model_name = model.__class__.__name__
+force_teaching = "Transformer" in model_name
 model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple GPUs
 
 
@@ -49,7 +50,7 @@ model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple 
 model_list = [rf'{script_path}\model\{x}' for x in os.listdir(rf'{script_path}\model')]
 if model_list:
     model_list.sort(key=lambda x: os.path.getmtime(x))
-    model.load_state_dict(torch.load(model_list[-1])) #load latest model
+    model.load_state_dict(torch.load(model_list[-1], weights_only=True)) #load latest model
     print(f'{model_list[-1]} Loaded.')
 
 
@@ -81,12 +82,13 @@ for epoch in range(epochs):
     scheduler.step(loss)
     print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}, LR: {optimizer.param_groups[0]['lr']:.8f}")
 
+
 # %%
 if not os.path.exists(rf'{script_path}\model'):
     os.makedirs(rf'{script_path}\model')
 
-torch.save(model.state_dict(), rf'{script_path}\model\{model.__class__.__name__}-loss-{loss.item():.4f}.pt')
-print(rf'{script_path}\model\{model.__class__.__name__}-loss-{loss.item():.4f}.pt Saved.')
+torch.save(model.state_dict(), rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt')
+print(rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt Saved.')
 
 
 # %%
