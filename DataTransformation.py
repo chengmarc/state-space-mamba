@@ -91,3 +91,15 @@ def data_transform(df, name, plot=False):
     if plot: plot_trend_residuals(df)
     return df
 
+
+# %%
+if __name__ == "__main__":
+    
+    from DataPreparation import data
+
+    all_data = []
+    for column in data.columns:
+        all_data.append(data_transform(data, str(column), plot=True))
+    all_data = pd.concat(all_data, axis=1)
+    all_data.to_csv('residuals.csv')
+

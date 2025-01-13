@@ -53,7 +53,7 @@ def create_model(data, forecast_horizon, device):
     input_dimension = len(data.columns)
     output_length = forecast_horizon
     
-    hidden_size = 64
+    hidden_size = 32
     dropout_rate = 0.05
     num_layers = 4
     

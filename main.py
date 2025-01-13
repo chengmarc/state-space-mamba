@@ -4,9 +4,10 @@ Created on Wed Jan  8 11:32:34 2025
 
 @author: uzcheng
 """
-import os
+import os, sys
 script_path = os.path.dirname(os.path.realpath(__file__))
 os.chdir(script_path)
+sys.path.insert(1, '{script_path}/class')
 
 import numpy as np
 import pandas as pd
@@ -19,31 +20,26 @@ print(f"Using device: {device}")
 
 
 # %%
-from DataPreparation import data  
-from DataTransformation import data_transform
+data = pd.read_csv('residuals.csv')
+data['Date'] = pd.to_datetime(data['Date'])
+data.set_index('Date', inplace=True)
 
-all_data = []
-for column in data.columns:
-    all_data.append(data_transform(data, str(column), plot=True))
-all_data = pd.concat(all_data, axis=1)
-all_data.to_csv('residuals.csv')
-
-data = all_data[['Difficulty_residuals', 
-                 'Transaction Count_scaled_residuals', 
-                 'Active Addresses Count_residuals',
-                 '30 Day Active Supply_scaled_residuals',
-                 '1 Year Active Supply_residuals',
-                 'LogPriceUSD_scaled_residuals']]
+data = data[['Difficulty_residuals', 
+             'Transaction Count_scaled_residuals', 
+             'Active Addresses Count_residuals',
+             '30 Day Active Supply_scaled_residuals',
+             '1 Year Active Supply_residuals',
+             'LogPriceUSD_scaled_residuals']]
 
 
 # %%
 historic_horizon = 4 * 365  # Use the last 8 years to predict
-forecast_horizon = 365  # Predict the next year
+forecast_horizon = 90  # Predict the next year
 
 from DataLoader import create_dataloader
 dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
 
-from TimeSeriesTransformer import create_model
+from AttentionLSTM import create_model
 model = create_model(data, forecast_horizon, device)
 force_teaching = "Transformer" in model.__class__.__name__
 model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple GPUs
@@ -59,7 +55,7 @@ if model_list:
 
 # %%
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
 model.train()
@@ -97,7 +93,7 @@ print(f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt Saved.')
 # %%
 model.eval()
 
-timerange = list(range(1, 2200, 20))
+timerange = list(range(1, 4*365, 10))
 timerange.reverse()
 
 for timeback in timerange:
@@ -106,7 +102,7 @@ for timeback in timerange:
         past = torch.tensor(data.iloc[-historic_horizon-timeback:-timeback, :].values, dtype=torch.float32).unsqueeze(0).to(device)
         
         if force_teaching: pred = model(past, torch.zeros_like(past))
-        else: outputs = model(inputs)
+        else: pred = model(past)
             
         predictions.append(pred.cpu().numpy().flatten())  # Flatten the prediction and move to CPU for further processing
         predictions = np.array(predictions).flatten()
@@ -117,7 +113,7 @@ for timeback in timerange:
 
     # Plot results
     plt.figure(figsize=(14, 7))
-    plt.plot(data.index[-historic_horizon:], data['LogPriceUSD'][-historic_horizon:], label='Log PriceUSD', color='blue')
+    plt.plot(data.index[-historic_horizon:], data['LogPriceUSD_scaled_residuals'][-historic_horizon:], label='Log PriceUSD', color='blue')
     plt.plot(predicted_price.index, predicted_price['Predicted PriceUSD'], label='Predicted PriceUSD (Next 365 Days)', color='red')
     plt.title('Actual vs Predicted PriceUSD for Next 365 Days')
     plt.xlabel('Date')

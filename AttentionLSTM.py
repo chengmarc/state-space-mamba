@@ -62,13 +62,13 @@ class AttentionLSTM(nn.Module):
         
         super(AttentionLSTM, self).__init__()
         
-        self.lstm1 = nn.LSTM(input_dimension, hidden_size, num_layers=3, batch_first=True, dropout=dropout_rate)
+        self.lstm1 = nn.LSTM(input_dimension, hidden_size, num_layers=4, batch_first=True, dropout=dropout_rate)
         self.dropout1 = nn.Dropout(dropout_rate)
         self.ln1 = nn.LayerNorm(hidden_size)
         
         self.attn = MultiHeadAttention(hidden_size, num_heads)
         
-        self.lstm2 = nn.LSTM(hidden_size, hidden_size, num_layers=3, batch_first=True, dropout=dropout_rate)
+        self.lstm2 = nn.LSTM(hidden_size, hidden_size, num_layers=4, batch_first=True, dropout=dropout_rate)
         self.dropout2 = nn.Dropout(dropout_rate)
         self.ln2 = nn.LayerNorm(hidden_size)
 
@@ -95,7 +95,7 @@ def create_model(data, forecast_horizon, device):
     input_dimension = len(data.columns)
     output_length = forecast_horizon
     
-    hidden_size = 16
+    hidden_size = 64
     dropout_rate = 0.05
     num_heads = 4
     

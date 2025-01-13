@@ -4,9 +4,10 @@ Created on Wed Jan  8 11:32:34 2025
 
 @author: uzcheng
 """
-import os
+import os, sys
 script_path = os.path.dirname(os.path.realpath(__file__))
 os.chdir(script_path)
+sys.path.insert(1, '{script_path}/class')
 
 import numpy as np
 import pandas as pd
@@ -19,10 +20,22 @@ print(f"Using device: {device}")
 
 
 # %%
+data = pd.read_csv('residuals.csv')
+data['Date'] = pd.to_datetime(data['Date'])
+data.set_index('Date', inplace=True)
+
+data = data[['Difficulty_residuals', 
+             'Transaction Count_scaled_residuals', 
+             'Active Addresses Count_residuals',
+             '30 Day Active Supply_scaled_residuals',
+             '1 Year Active Supply_residuals',
+             'LogPriceUSD_scaled_residuals']]
+
+
+# %%
 historic_horizon = 4 * 365  # Use the last 4 years to predict
 forecast_horizon = 365  # Predict the next year
 
-from DataPreparation import data
 from DataLoader import create_dataloader2
 dataloader = create_dataloader2(data, historic_horizon, forecast_horizon, device, debug=False)
 
