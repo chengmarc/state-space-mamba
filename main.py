@@ -7,7 +7,7 @@ Created on Wed Jan  8 11:32:34 2025
 import os, sys
 script_path = os.path.dirname(os.path.realpath(__file__))
 os.chdir(script_path)
-sys.path.insert(1, f'{script_path}/class')
+sys.path.insert(1, rf'{script_path}\class')
 
 import numpy as np
 import pandas as pd
@@ -46,7 +46,7 @@ model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple 
 
 
 # %% 
-model_list = [f'./model/{x}' for x in os.listdir('./model')]
+model_list = [rf'{script_path}\model\{x}' for x in os.listdir(rf'{script_path}\model')]
 if model_list:
     model_list.sort(key=lambda x: os.path.getmtime(x))
     model.load_state_dict(torch.load(model_list[-1])) #load latest model
@@ -81,13 +81,12 @@ for epoch in range(epochs):
     scheduler.step(loss)
     print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}, LR: {optimizer.param_groups[0]['lr']:.8f}")
 
-
 # %%
-if not os.path.exists('model'):
-    os.makedirs('model')
+if not os.path.exists(rf'{script_path}\model'):
+    os.makedirs(rf'{script_path}\model')
 
-torch.save(model.state_dict(), f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt')
-print(f'./model/{model.__class__.__name__}-loss-{loss.item():.4f}.pt Saved.')
+torch.save(model.state_dict(), rf'{script_path}\model\{model.__class__.__name__}-loss-{loss.item():.4f}.pt')
+print(rf'{script_path}\model\{model.__class__.__name__}-loss-{loss.item():.4f}.pt Saved.')
 
 
 # %%
