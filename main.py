@@ -7,7 +7,7 @@ Created on Wed Jan  8 11:32:34 2025
 import os, sys
 script_path = os.path.dirname(os.path.realpath(__file__))
 os.chdir(script_path)
-sys.path.insert(1, '{script_path}/class')
+sys.path.insert(1, f'{script_path}/class')
 
 import numpy as np
 import pandas as pd
@@ -39,7 +39,7 @@ forecast_horizon = 90  # Predict the next year
 from DataLoader import create_dataloader
 dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
 
-from AttentionLSTM import create_model
+from MambaSSM import create_model
 model = create_model(data, forecast_horizon, device)
 force_teaching = "Transformer" in model.__class__.__name__
 model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple GPUs
@@ -55,7 +55,7 @@ if model_list:
 
 # %%
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.00005)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
 
 model.train()

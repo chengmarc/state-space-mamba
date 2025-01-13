@@ -7,7 +7,7 @@ Created on Wed Jan  8 11:32:34 2025
 import os, sys
 script_path = os.path.dirname(os.path.realpath(__file__))
 os.chdir(script_path)
-sys.path.insert(1, '{script_path}/class')
+sys.path.insert(1, f'{script_path}/class')
 
 import numpy as np
 import pandas as pd
