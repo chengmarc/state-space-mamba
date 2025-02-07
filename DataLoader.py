@@ -10,7 +10,7 @@ os.chdir(script_path)
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, random_split
 
 
 # %%
@@ -18,7 +18,7 @@ def create_dataloader(data, historic_horizon, forecast_horizon, device, debug=Fa
 
     X, y = [], []
     for i in range(len(data) - historic_horizon - forecast_horizon + 1):
-        inputs, targets = data[:], data.iloc[:, -1]
+        inputs, targets = data[:], data.iloc[:, -1] # all features for price
         X.append(inputs[i:(i + historic_horizon)].values)  # All columns as input features
         y.append(targets[(i + historic_horizon):(i + historic_horizon + forecast_horizon)].values)  # Last column as target
 
@@ -27,13 +27,20 @@ def create_dataloader(data, historic_horizon, forecast_horizon, device, debug=Fa
     X_tensor = torch.tensor(X, dtype=torch.float32).to(device)
     y_tensor = torch.tensor(y, dtype=torch.float32).to(device)
 
-    batch_size = 32
     dataset = TensorDataset(X_tensor, y_tensor)
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
     
     print(f"Inputs shape: {X.shape}")
     print(f"Targets shape: {y.shape}")
     
+    train_size = int(len(dataset) * 0.9)
+    valid_size = len(dataset) - train_size
+
+    train_dataset, valid_datase = random_split(dataset, [train_size, valid_size])    
+    
+    batch_size = 32
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    valid_loader = DataLoader(valid_datase, batch_size=batch_size, shuffle=False)
+    
     if debug: return (X, y)
-    else: return dataloader
+    else: return train_loader, valid_loader
 

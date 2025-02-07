@@ -15,38 +15,36 @@ import matplotlib.pyplot as plt
 import torch
 from torch import nn
 
+import warnings
+warnings.simplefilter(action='ignore')
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
 # %%
-data = pd.read_csv('residuals.csv')
-data['Date'] = pd.to_datetime(data['Date'])
-data.set_index('Date', inplace=True)
+from DataTransformation import a, b, c # Log parameters used for inverse function later
+from DataTransformation import data
 
-data = data[['Difficulty_residuals', 
-             'Transaction Count_scaled_residuals', 
-             'Active Addresses Count_residuals',
-             '30 Day Active Supply_scaled_residuals',
-             '1 Year Active Supply_residuals',
-             'LogPriceUSD_scaled_residuals']]
-
-
-# %%
-historic_horizon = 4 * 365  # Use the last 8 years to predict
-forecast_horizon = 90  # Predict the next year
+historic_horizon = 5 * 365  # Use the last 8 years to predict
+forecast_horizon = 30  # Predict the next year
+data = data[:-forecast_horizon]
 
 from DataLoader import create_dataloader
-dataloader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
+train_loader, valid_loader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
 
 from MambaSSM import create_model
 model = create_model(data, forecast_horizon, device)
+
 model_name = model.__class__.__name__
 force_teaching = "Transformer" in model_name
 model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple GPUs
 
 
 # %% 
+if not os.path.exists(rf'{script_path}\model'):
+    os.makedirs(rf'{script_path}\model')
+    
 model_list = [rf'{script_path}\model\{x}' for x in os.listdir(rf'{script_path}\model')]
 if model_list:
     model_list.sort(key=lambda x: os.path.getmtime(x))
@@ -56,13 +54,15 @@ if model_list:
 
 # %%
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=10)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
-model.train()
 epochs = 1000
-for epoch in range(epochs):
-    for inputs, targets in dataloader:        
+for epoch in range(epochs):    
+    
+    model.train()
+    train_loss = 0    
+    for inputs, targets in train_loader:        
         optimizer.zero_grad()
         
         if force_teaching: outputs = model(inputs, torch.zeros_like(inputs))
@@ -78,23 +78,39 @@ for epoch in range(epochs):
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
         optimizer.step()
+        train_loss += loss.item()
+
+    avg_train_loss = train_loss / len(train_loader)
+    print(f"Epoch {epoch+1}/{epochs}, Training Loss: {avg_train_loss:.4f}, LR: {optimizer.param_groups[0]['lr']:.8f}")
+    
+    model.eval()    
+    valid_loss = 0
+    with torch.no_grad():
         
-    scheduler.step(loss)
-    print(f"Epoch {epoch+1}/{epochs}, Loss: {loss.item():.4f}, LR: {optimizer.param_groups[0]['lr']:.8f}")
+        for inputs, targets in valid_loader:
+            
+            outputs = model(inputs)
+            outputs = outputs.squeeze(-1)
+            targets = targets.squeeze(-1)
 
-
-# %%
-if not os.path.exists(rf'{script_path}\model'):
-    os.makedirs(rf'{script_path}\model')
-
-torch.save(model.state_dict(), rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt')
-print(rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt Saved.')
+            loss = criterion(outputs, targets)
+            valid_loss += loss.item()
+            
+    avg_valid_loss = valid_loss / len(valid_loader)  # Average loss for validation
+    print(f"Validation Loss: {avg_valid_loss:.4f}")
+    
+    scheduler.step(avg_valid_loss)
+    
+    if epoch % 20 == 0:
+        torch.save(model.state_dict(), rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt')
+        print(rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt Saved.')
 
 
 # %%
 model.eval()
 
-timerange = list(range(1, 4*365, 10))
+test_period = 2*365
+timerange = list(range(1, test_period, 10))
 timerange.reverse()
 
 for timeback in timerange:
@@ -110,15 +126,36 @@ for timeback in timerange:
 
     # Create DataFrame for predictions
     predicted_dates = pd.date_range(start=data.index[-1-timeback] + pd.Timedelta(days=1), periods=len(predictions))
-    predicted_price = pd.DataFrame(predictions, index=predicted_dates, columns=['Predicted PriceUSD'])
+    predicted_price = pd.DataFrame(predictions, index=predicted_dates, columns=['Predicted LogPriceUSD Residual'])
 
     # Plot results
     plt.figure(figsize=(14, 7))
-    plt.plot(data.index[-historic_horizon:], data['LogPriceUSD_scaled_residuals'][-historic_horizon:], label='Log PriceUSD', color='blue')
-    plt.plot(predicted_price.index, predicted_price['Predicted PriceUSD'], label='Predicted PriceUSD (Next 365 Days)', color='red')
-    plt.title('Actual vs Predicted PriceUSD for Next 365 Days')
+    plt.plot(data.index[-test_period:], data['LogPriceUSD_residuals'][-test_period:], label='Log PriceUSD Residual', color='blue')
+    plt.plot(predicted_price.index, predicted_price['Predicted LogPriceUSD Residual'], label='Predicted LogPriceUSD Residual', color='red')
+    plt.title('Actual vs Predicted LogPriceUSD Residual')
     plt.xlabel('Date')
-    plt.ylabel('PriceUSD')
+    plt.ylabel('Residual')
+    plt.grid(linestyle = '-.')
     plt.legend()
     plt.show()
+    
+    
+# %%
+raw = pd.read_csv(rf'{script_path}/btc.csv', usecols=["time", "PriceUSD"])[-365:-1]
+raw['Date'] = pd.to_datetime(raw['time'])
+raw.set_index('Date', inplace=True)
+
+X = (predicted_price.index - data.index[0]).days
+Z = a * np.log(X + c) + b
+Y = np.exp(predicted_price.copy().iloc[:, 0] + Z.values)
+
+plt.figure(figsize=(14, 7))
+plt.plot(raw.index, raw['PriceUSD'], label='Log PriceUSD', color='blue')
+plt.plot(Y.index, Y, label='Predicted PriceUSD (Next 365 Days)', color='red')
+plt.title('Actual vs Predicted PriceUSD for Next 365 Days')
+plt.xlabel('Date')
+plt.ylabel('PriceUSD')
+plt.grid(linestyle = '-.')
+plt.legend()
+plt.show()
 

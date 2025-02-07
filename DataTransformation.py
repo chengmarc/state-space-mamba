@@ -16,7 +16,64 @@ from sklearn.linear_model import LinearRegression
 
 
 # %%
-def data_transform(df, name, plot=False):
+def prepare_data():
+    
+    data = pd.read_csv('btc.csv')
+    data = data[365*2:-1]
+
+    data['Date'] = pd.to_datetime(data['time'])
+    data.set_index('Date', inplace=True)
+
+    data['Difficulty'] = np.log(data['DiffLast'])
+    data['Transaction Count'] = np.log(data['TxCnt'])
+    data['Active Addresses Count'] = np.log(data['AdrActCnt'])
+
+    data['30 Day Active Supply'] = np.log(data['SplyAct30d'])-10
+    data['1 Year Active Supply'] = np.log(data['SplyAct1yr'])-10
+    data['CurrentSupply'] = np.log(data['SplyCur'])-10
+    data['LogPriceUSD'] = np.log(data['PriceUSD'])
+
+    data = data[['Difficulty', 'Transaction Count', 'Active Addresses Count', '30 Day Active Supply', '1 Year Active Supply', 'CurrentSupply', 'LogPriceUSD']]
+    data.fillna(0, inplace=True)
+    
+    return data
+
+data = prepare_data()
+
+
+# %%
+def log_fit(x, a, b, c):
+    
+    return a * np.log(x + c) + b
+
+
+def log_trend(X, Y, get_param=False):
+    
+    initial_guess = [1, 1, 1]
+    fitted_param, _ = curve_fit(log_fit, X, Y, p0=initial_guess)
+    a, b, c = fitted_param
+    
+    trend = log_fit(X, a, b, c)
+    if get_param: return a, b, c
+    else: return trend
+
+
+# %%
+def get_log_params(df, name):
+    
+    df = df[[f'{name}']]
+    
+    Y = pd.Series(df[f'{name}']) 
+    X = (Y.index - Y.index[0]).days
+    
+    a, b, c = log_trend(X, Y, get_param=True)
+    return a, b, c
+
+a, b, c = get_log_params(data, "LogPriceUSD")
+
+
+# %%
+def transform_col(df, name, plot=False):
     
     df = df[[f'{name}']]
     
@@ -25,22 +82,8 @@ def data_transform(df, name, plot=False):
     Y = pd.Series(df[f'{name}']) 
     X = (Y.index - Y.index[0]).days
 
-    def log_fit(x, a, b, c):
-        
-        return a * np.log(x + c) + b
-
-    def get_log_trend(X, Y):
-        
-        initial_guess = [1, 1, 1]
-        fitted_param, _ = curve_fit(log_fit, X, Y, p0=initial_guess)
-        a, b, c = fitted_param
-        
-        trend = log_fit(X, a, b, c)
-        return trend
-
-    df[f'{name}_log_trend'] = get_log_trend(X, Y)
+    df[f'{name}_log_trend'] = log_trend(X, Y, get_param=False)
     df[f'{name}_residuals'] = df[f'{name}'] - df[f'{name}_log_trend']
-
 
     ############### Residual Scaling ###############
     
@@ -60,7 +103,6 @@ def data_transform(df, name, plot=False):
 
     df[f'{name}_vol_trend'] = get_vol_trend(X, Y)
     df[f'{name}_scaled_residuals'] = df[f'{name}_residuals'] / df[f'{name}_vol_trend']
-
 
     ############### Plotting ###############
     
@@ -93,13 +135,20 @@ def data_transform(df, name, plot=False):
 
 
 # %%
-if __name__ == "__main__":
+def transform_df(data):
     
-    from DataPreparation import data
-
     all_data = []
     for column in data.columns:
-        all_data.append(data_transform(data, str(column), plot=True))
+        all_data.append(transform_col(data, str(column), plot=True))
     all_data = pd.concat(all_data, axis=1)
-    all_data.to_csv('residuals.csv')
+
+    all_data = all_data[['Difficulty_residuals', 
+                         'Transaction Count_residuals', 
+                         'Active Addresses Count_residuals',
+                         '30 Day Active Supply_residuals',
+                         '1 Year Active Supply_residuals',
+                         'LogPriceUSD_residuals']]
+    return all_data
+
+data = transform_df(data)
 
