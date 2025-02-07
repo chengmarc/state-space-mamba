@@ -54,7 +54,7 @@ if model_list:
 
 # %%
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
 epochs = 1000
@@ -81,7 +81,7 @@ for epoch in range(epochs):
         train_loss += loss.item()
 
     avg_train_loss = train_loss / len(train_loader)
-    print(f"Epoch {epoch+1}/{epochs}, Training Loss: {avg_train_loss:.4f}, LR: {optimizer.param_groups[0]['lr']:.8f}")
+    print(f"Epoch {epoch+1}/{epochs}, Training Loss: {avg_train_loss:.6f}, LR: {optimizer.param_groups[0]['lr']:.8f}")
     
     model.eval()    
     valid_loss = 0
@@ -97,13 +97,13 @@ for epoch in range(epochs):
             valid_loss += loss.item()
             
     avg_valid_loss = valid_loss / len(valid_loader)  # Average loss for validation
-    print(f"Validation Loss: {avg_valid_loss:.4f}")
+    print(f"Validation Loss: {avg_valid_loss:.6f}")
     
     scheduler.step(avg_valid_loss)
     
     if epoch % 20 == 0:
-        torch.save(model.state_dict(), rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt')
-        print(rf'{script_path}\model\{model_name}-loss-{loss.item():.4f}.pt Saved.')
+        torch.save(model.state_dict(), rf'{script_path}\model\{model_name}-loss-{loss.item():.6f}.pt')
+        print(rf'{script_path}\model\{model_name}-loss-{loss.item():.6f}.pt Saved.')
 
 
 # %%
@@ -130,7 +130,7 @@ for timeback in timerange:
 
     # Plot results
     plt.figure(figsize=(14, 7))
-    plt.plot(data.index[-test_period:], data['LogPriceUSD_residuals'][-test_period:], label='Log PriceUSD Residual', color='blue')
+    plt.plot(data.index[-test_period:], data['LogPriceUSD_residuals'][-test_period:], label='Actual LogPriceUSD Residual', color='blue')
     plt.plot(predicted_price.index, predicted_price['Predicted LogPriceUSD Residual'], label='Predicted LogPriceUSD Residual', color='red')
     plt.title('Actual vs Predicted LogPriceUSD Residual')
     plt.xlabel('Date')
@@ -141,7 +141,7 @@ for timeback in timerange:
     
     
 # %%
-raw = pd.read_csv(rf'{script_path}/btc.csv', usecols=["time", "PriceUSD"])[-365:-1]
+raw = pd.read_csv(rf'{script_path}/btc.csv', usecols=["time", "PriceUSD"])[-test_period:-1]
 raw['Date'] = pd.to_datetime(raw['time'])
 raw.set_index('Date', inplace=True)
 
@@ -150,11 +150,11 @@ Z = a * np.log(X + c) + b
 Y = np.exp(predicted_price.copy().iloc[:, 0] + Z.values)
 
 plt.figure(figsize=(14, 7))
-plt.plot(raw.index, raw['PriceUSD'], label='Log PriceUSD', color='blue')
-plt.plot(Y.index, Y, label='Predicted PriceUSD (Next 365 Days)', color='red')
-plt.title('Actual vs Predicted PriceUSD for Next 365 Days')
+plt.plot(raw.index, raw['PriceUSD'], label='Actual Price (USD)', color='blue')
+plt.plot(Y.index, Y, label='Predicted Price (USD)', color='red')
+plt.title('Actual vs Predicted Price (USD)')
 plt.xlabel('Date')
-plt.ylabel('PriceUSD')
+plt.ylabel('Price (USD)')
 plt.grid(linestyle = '-.')
 plt.legend()
 plt.show()
