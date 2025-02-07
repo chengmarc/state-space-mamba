@@ -52,11 +52,6 @@ We experimented with several sequence modeling architectures, each incorporating
 | Transformer | A self-attention-based model that removes recurrence, leveraging positional encodings and multi-head attention to capture both local and global dependencies. |
 | MambaSSM | A state-space model (SSM) optimized for long-range forecasting, leveraging structured state transitions and memory-efficient recurrence to outperform traditional RNN-based architectures. |
 
-## Model Training & Evaluation ##
-Models were trained using Mean Squared Error (MSE) as the primary loss function, with additional regularization to prevent overfitting.
-Forecasting performance was evaluated using RMSE (Root Mean Squared Error) and MAE (Mean Absolute Error), ensuring robustness across different time scales.
-Hyperparameter tuning was conducted via grid search to optimize sequence length, learning rate, and model depth.
-
 ## Results & Findings ##
 MambaSSM demonstrated superior performance, effectively capturing long-range dependencies while maintaining computational efficiency.
 Log transformation + residual forecasting significantly improved stability, leading to better generalization across different time horizons.
