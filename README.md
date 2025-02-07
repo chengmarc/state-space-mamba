@@ -60,3 +60,7 @@ We experimented with several sequence modeling architectures, each incorporating
 - **MambaSSM outperformed traditional models** such as Simple LSTM and Seq2Seq LSTM, and even the attention-based models, by a significant margin.
 
 ![result](./result.png)
+
+## References ##
+Fuck you I wrote them all.
+Okay maybe I will add some references in the future.
