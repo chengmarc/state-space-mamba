@@ -22,7 +22,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 
-# %%
+# %% Preparation
 from DataTransformation import a, b, c # Log parameters used for inverse function later
 from DataTransformation import data
 
@@ -41,7 +41,7 @@ force_teaching = "Transformer" in model_name
 model = nn.DataParallel(model, device_ids=list(range(1))) # In case of multiple GPUs
 
 
-# %% 
+# %% Load Existing Model
 if not os.path.exists(rf'{script_path}\model'):
     os.makedirs(rf'{script_path}\model')
     
@@ -52,7 +52,7 @@ if model_list:
     print(f'{model_list[-1]} Loaded.')
 
 
-# %%
+# %% Training Loop
 criterion = nn.MSELoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
@@ -106,7 +106,7 @@ for epoch in range(epochs):
         print(rf'{script_path}\model\{model_name}-loss-{loss.item():.6f}.pt Saved.')
 
 
-# %%
+# %% Evaluation
 model.eval()
 
 test_period = 2*365
@@ -140,7 +140,7 @@ for timeback in timerange:
     plt.show()
     
     
-# %%
+# %% Prediction
 raw = pd.read_csv(rf'{script_path}/btc.csv', usecols=["time", "PriceUSD"])[-test_period:-1]
 raw['Date'] = pd.to_datetime(raw['time'])
 raw.set_index('Date', inplace=True)

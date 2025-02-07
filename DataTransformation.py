@@ -48,6 +48,24 @@ def log_fit(x, a, b, c):
 
 
 def log_trend(X, Y, get_param=False):
+    """
+    Fits a logarithmic trend to a given dataset.    
+    This function estimates the parameters of a logarithmic curve of the form: 
+    
+        Y = a * log(X + b) + c
+
+    where `X` is a series of integer-indexed dates, and `Y` is the corresponding series of float values.
+    
+    ----------
+    X : array-like
+        A series of date indices in integer form.
+    Y : array-like
+        A series of float values corresponding to the dependent variable.
+        
+    get_param : bool, optional
+        If `get_param` is False, returns an array of fitted trend values.
+        If `get_param` is True, returns a tuple `(a, b, c)`, which are the parameters of the logarithmic trend.
+    """
     
     initial_guess = [1, 1, 1]
     fitted_param, _ = curve_fit(log_fit, X, Y, p0=initial_guess)
@@ -60,7 +78,23 @@ def log_trend(X, Y, get_param=False):
 
 # %%
 def get_log_params(df, name):
-    
+    """
+    Computes the logarithmic trend parameters for a specified column in a DataFrame.
+
+    This function extracts a time series from the DataFrame, converts its index 
+    to a numerical format, and fits a logarithmic trend using `log_trend`.
+
+    ----------
+    df : pd.DataFrame
+        A DataFrame containing the time series data with a DateTime index.
+    name : str
+        The name of the column for which to compute the logarithmic trend.
+        
+    Returns a tuple (a, b, c), which are the fitted parameters of the logarithmic trend:        
+        a: Intercept of the logarithmic fit.
+        b: Coefficient of the logarithmic term.
+        c: Shift parameter to ensure a well-defined logarithm.
+    """
     df = df[[f'{name}']]
     
     Y = pd.Series(df[f'{name}']) 
