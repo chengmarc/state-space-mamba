@@ -102,8 +102,8 @@ for epoch in range(epochs):
     scheduler.step(avg_valid_loss)
     
     if epoch % 20 == 0:
-        torch.save(model.state_dict(), rf'{script_path}\model\{model_name}-loss-{loss.item():.6f}.pt')
-        print(rf'{script_path}\model\{model_name}-loss-{loss.item():.6f}.pt Saved.')
+        torch.save(model.state_dict(), rf'{script_path}\model\{model_name}-loss-{avg_valid_loss.item():.6f}.pt')
+        print(rf'{script_path}\model\{model_name}-loss-{avg_valid_loss.item():.6f}.pt Saved.')
 
 
 # %% Evaluation
