@@ -110,13 +110,15 @@ for epoch in range(epochs):
 model.eval()
 
 test_period = 2*365
-timerange = list(range(1, test_period, 10))
+timerange = list(range(0, test_period, 10))
 timerange.reverse()
 
 for timeback in timerange:
     with torch.no_grad():
         predictions = []
-        past = torch.tensor(data.iloc[-historic_horizon-timeback:-timeback, :].values, dtype=torch.float32).unsqueeze(0).to(device)
+        past_start = -historic_horizon-timeback if timeback != 0 else -historic_horizon 
+        past_end = -timeback if timeback != 0 else None
+        past = torch.tensor(data.iloc[past_start:past_end, :].values, dtype=torch.float32).unsqueeze(0).to(device)
         
         if force_teaching: pred = model(past, torch.zeros_like(past))
         else: pred = model(past)
