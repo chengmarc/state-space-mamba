@@ -109,7 +109,7 @@ for epoch in range(epochs):
 # %% Evaluation
 model.eval()
 
-test_period = 2*365
+test_period = 365
 timerange = list(range(0, test_period, 10))
 timerange.reverse()
 
