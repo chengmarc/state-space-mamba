@@ -13,65 +13,79 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 from sklearn.linear_model import LinearRegression
+import pandas_ta as ta
+
+
+from binance.spot import Spot
+client = Spot()
+print(client.time())
+
+# %%
+
+def get_df(ticker, interval="1d", total_klines=5000):
+    
+    all_klines = []
+    end_time = None  # Start from the latest data
+
+    while len(all_klines) < total_klines:
+        try:
+            # Fetch K-lines with pagination
+            klines = client.klines(ticker, "1d", limit=1000, endTime=end_time)
+            if not klines: break
+
+            all_klines.extend(klines)
+            end_time = klines[0][0] - 1
+            
+        except Exception as e:            
+            print(f"Error fetching {ticker}: {e}")
+            break
+
+    # Convert to DataFrame
+    columns = [
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "quote_asset_volume", "num_trades",
+        "taker_buy_base", "taker_buy_quote", "ignore"
+    ]
+    df = pd.DataFrame(all_klines[:total_klines], columns=columns)  # Trim excess data
+    
+    df = df.apply(pd.to_numeric, errors='coerce')
+    df["open_time"] = pd.to_datetime(df["open_time"], unit="ms")
+    df["close_time"] = pd.to_datetime(df["close_time"], unit="ms")
+    df = df.sort_values(by="open_time").reset_index(drop=True)
+
+    return df
+
+data = get_df("BTCUSDT")
+
+data['Date'] = pd.to_datetime(data['open_time'])
+data.set_index('Date', inplace=True)
+
+lst = ["open", "high", "low", "close", "volume", "num_trades"]
+data = data[lst]
+for col in lst:
+    data[f'{col}'] = np.log(data[f'{col}'])
+
 
 
 # %%
-def prepare_data():
+def linear_fit(x, a, b):
     
-    data = pd.read_csv('https://raw.githubusercontent.com/coinmetrics/data/refs/heads/master/csv/btc.csv')
-    data = data[365*2:-1]
-
-    data['Date'] = pd.to_datetime(data['time'])
-    data.set_index('Date', inplace=True)
-    data['LogPriceUSD'] = np.log(data['PriceUSD'])
-
-    data['Difficulty'] = np.log(data['DiffLast'])
-    data['Transaction Count'] = np.log(data['TxCnt'])
-    data['Active Addresses Count'] = np.log(data['AdrActCnt'])
-    data['30 Day Active Supply'] = np.log(data['SplyAct30d'])-10
-    data['1 Year Active Supply'] = np.log(data['SplyAct1yr'])-10
-    data['CurrentSupply'] = np.log(data['SplyCur'])-10
-    
-    data = data[['Difficulty', 'Transaction Count', 'Active Addresses Count', '30 Day Active Supply', '1 Year Active Supply', 'CurrentSupply', 'LogPriceUSD']]
-    data.fillna(0, inplace=True)
-    
-    return data
-
-data = prepare_data()
+    return a * x + b
 
 
-# %%
-def log_fit(x, a, b, c):
-    
-    return a * np.log(x + c) + b
+def linear_trend(X, Y, get_param=False):
+    a_init = (Y[-1] - Y[0]) / (X[-1] - X[0])  # 斜率
+    b_init = np.mean(Y)  # 截距
+    p0 = [a_init, b_init]
 
-
-def log_trend(X, Y, get_param=False):
-    """
-    Fits a logarithmic trend to a given dataset.    
-    This function estimates the parameters of a logarithmic curve of the form: 
+    # 拟合
+    popt, pcov = curve_fit(linear_fit, X, Y, p0=p0, maxfev=5000)
     
-        Y = a * log(X + b) + c
-
-    where `X` is a series of integer-indexed dates, and `Y` is the corresponding series of float values.
+    # 获取拟合参数
+    a, b = popt
     
-    ----------
-    X : array-like
-        A series of date indices in integer form.
-    Y : array-like
-        A series of float values corresponding to the dependent variable.
-        
-    get_param : bool, optional
-        If `get_param` is False, returns an array of fitted trend values.
-        If `get_param` is True, returns a tuple `(a, b, c)`, which are the parameters of the logarithmic trend.
-    """
-    
-    initial_guess = [1, 1, 1]
-    fitted_param, _ = curve_fit(log_fit, X, Y, p0=initial_guess)
-    a, b, c = fitted_param
-    
-    trend = log_fit(X, a, b, c)
-    if get_param: return a, b, c
+    trend = linear_fit(X, a, b)
+    if get_param: return a, b
     else: return trend
 
 
@@ -99,10 +113,10 @@ def get_log_params(df, name):
     Y = pd.Series(df[f'{name}']) 
     X = (Y.index - Y.index[0]).days
     
-    a, b, c = log_trend(X, Y, get_param=True)
-    return a, b, c
+    a, b = linear_trend(X, Y, get_param=True)
+    return a, b
 
-a, b, c = get_log_params(data, "LogPriceUSD")
+a, b = get_log_params(data, "close")
 
 
 # %%
@@ -115,8 +129,8 @@ def transform_col(df, name, plot=False):
     Y = pd.Series(df[f'{name}']) 
     X = (Y.index - Y.index[0]).days
 
-    df[f'{name}_log_trend'] = log_trend(X, Y, get_param=False)
-    df[f'{name}_residuals'] = df[f'{name}'] - df[f'{name}_log_trend']
+    df[f'{name}_linear_trend'] = linear_trend(X, Y, get_param=False)
+    df[f'{name}_residuals'] = df[f'{name}'] - df[f'{name}_linear_trend']
 
     ############### Residual Scaling ###############
     
@@ -148,7 +162,7 @@ def transform_col(df, name, plot=False):
         axs[2].set_title('Scaled Residuals of Logarithmic Trend')
 
         axs[0].plot(df.index, df[f'{name}'], label='Original Data', color='blue')
-        axs[0].plot(df.index, df[f'{name}_log_trend'], label='Logarithmic Trend', color='red', linestyle='--')
+        axs[0].plot(df.index, df[f'{name}_linear_trend'], label='Logarithmic Trend', color='red', linestyle='--')
         axs[1].plot(df.index, df[f'{name}_residuals'], label='Residuals', color='green')
         axs[2].plot(df.index, df[f'{name}_scaled_residuals'], label='Scaled Residuals')
 
@@ -175,13 +189,13 @@ def transform_df(data):
         all_data.append(transform_col(data, str(column), plot=True))
     all_data = pd.concat(all_data, axis=1)
     
-    all_data = all_data[['Difficulty', 
-                         'Transaction Count_residuals', 
-                         'Active Addresses Count_residuals',
-                         '30 Day Active Supply_residuals',
-                         '1 Year Active Supply_residuals',
-                         'LogPriceUSD_residuals']]
-
+    all_data = all_data[['open_residuals', 
+                         'high_residuals', 
+                         'low_residuals',
+                         'close_residuals',
+                         'volume_residuals',
+                         'num_trades_residuals']]
+    all_data = all_data[[col for col in all_data.columns if col != 'close_residuals'] + ['close_residuals']]
     return all_data
 
 data = transform_df(data)

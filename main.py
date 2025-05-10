@@ -26,9 +26,9 @@ print(f"Using device: {device}")
 from DataTransformation import a, b, c # Log parameters used for inverse function later
 from DataTransformation import data
 
-historic_horizon = 5 * 365  # Use the last 8 years to predict
-forecast_horizon = 30  # Predict the next year
-data = data[:-forecast_horizon]
+historic_horizon = 2 * 365  # Use the last 8 years to predict
+forecast_horizon = 90  # Predict the next year
+#data = data[:-forecast_horizon]
 
 from DataLoader import create_dataloader
 train_loader, valid_loader = create_dataloader(data, historic_horizon, forecast_horizon, device, debug=False)
@@ -54,7 +54,7 @@ if model_list:
 
 # %% Training Loop
 criterion = nn.MSELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
 epochs = 1000
@@ -143,7 +143,7 @@ for timeback in timerange:
     
     
 # %% Prediction
-raw = pd.read_csv(rf'{script_path}/btc.csv', usecols=["time", "PriceUSD"])[-test_period:-1]
+raw = pd.read_csv('https://raw.githubusercontent.com/coinmetrics/data/refs/heads/master/csv/btc.csv')[-test_period:-1]
 raw['Date'] = pd.to_datetime(raw['time'])
 raw.set_index('Date', inplace=True)
 
