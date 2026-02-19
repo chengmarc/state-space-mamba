@@ -2,65 +2,87 @@
 [![cuda - v12.1](https://img.shields.io/static/v1?label=cuda&message=v12.1&color=green&logo=nvidia&logoColor=white)](https://)
 [![torch - v2.5.1](https://img.shields.io/static/v1?label=torch&message=v2.5.1&color=orange&logo=pytorch&logoColor=white)](https://)
 
-### Repository Summary ###
-- Task: Time Series Forecasting
-- Model Type: RNN, LSTM, Transformer, MAMBA
+# Sequence-to-Sequence Time Series Forecasting with Multi-Feature Inputs
 
-## **Sequence-to-Sequence Time Series Forecasting with Multi-Feature Inputs**  ##
-This project investigates **sequence-to-sequence time series forecasting** using multi-feature inputs, leveraging various deep learning architectures to model temporal dependencies. A key focus is on **detrending via logarithmic transformations** and residual forecasting, allowing for more stable and interpretable predictions.  
+**Task:** Time Series Forecasting &nbsp;|&nbsp; **Architectures:** RNN, LSTM, Transformer, Mamba
 
-## Methodology ##
-To improve forecasting stability and mitigate non-stationarity, we apply the following transformations:  
+---
 
-### 1. Logarithmic Trend Extraction ###
-Given an observation <code>Y<sub>t</sub></code>, we approximate its underlying trend using a logarithmic function of the form: 
+## Abstract
 
-**Y<sub>t</sub> = a + b * log(X<sub>t</sub> + c)**
+This project investigates sequence-to-sequence time series forecasting using multi-feature inputs across a range of deep learning architectures. A central contribution is a detrending pipeline based on logarithmic trend extraction and residual forecasting, which improves stationarity and prediction stability. Experiments compare six architectures — SegRNN, LSTM, Seq2Seq LSTM, Attention LSTM, Transformer, and MambaSSM — on the same forecasting task, with MambaSSM achieving the best performance among all tested models.
 
-where <code>X<sub>t</sub></code> represents the time index transformed into an integer format, and <code>(a, b, c)</code> are estimated via non-linear least squares fitting. This transformation is particularly effective in capturing **exponential-like growth** while ensuring numerical stability in cases of small <code>X<sub>t</sub></code>.  
+---
 
-### 2. Residual Computation ###
-After estimating the log trend <code>Ŷ<sub>t</sub></code>, the residual component is obtained as:
+## 1. Methodology
 
-**R<sub>t</sub> = Y<sub>t</sub> - Ŷ<sub>t</sub>**
+To mitigate non-stationarity, all inputs are passed through a two-stage transformation before being fed to any model.
 
-This isolates short-term fluctuations, allowing the forecasting model to learn purely stationary residual dynamics without being influenced by global trend variations. Below is an example of the computation on a single feature.
+### 1.1 Logarithmic Trend Extraction
+
+Given an observation <code>Y<sub>t</sub></code>, the underlying trend is approximated by fitting a logarithmic function of the form:
+
+$$Y_t = a + b \cdot \log(X_t + c)$$
+
+where <code>X<sub>t</sub></code> is the integer-encoded time index and <code>(a, b, c)</code> are estimated via non-linear least squares. This form is well-suited to data exhibiting exponential-like growth and remains numerically stable for small <code>X<sub>t</sub></code>.
+
+### 1.2 Residual Computation
+
+The residual component is obtained by subtracting the fitted trend:
+
+$$R_t = Y_t - \hat{Y}_t$$
+
+This isolates stationary short-term fluctuations from the global trend, allowing each model to focus on residual dynamics rather than long-run drift. An example of the transformation on a single feature is shown below.
 
 ![method](./method.png)
 
-### 3. Multi-Feature Residual Forecasting ###
-Instead of forecasting the absolute values of <code>Y<sub>t</sub></code>, we predict the residual components <code>R<sub>t</sub></code> using multiple transformed features. The model learns an implicit mapping:
+### 1.3 Multi-Feature Residual Forecasting
 
-**∑<sub>i=1</sub><sup>k</sup> (R<sub>t-n</sub><sup>(i)</sup>, ..., R<sub>t</sub><sup>(i)</sup>)  →  (R<sub>t+1</sub>, ..., R<sub>t+m</sub>)**
- 
-where <code>n</code> and <code>m</code> denote the historical and forecasting horizons, respectively.
+Rather than predicting absolute values, the models are trained to forecast residual sequences. Given <code>k</code> input features, the learned mapping takes the form:
 
-### 4. Inverse Transformation for Final Prediction ###
-After forecasting <code>(R<sub>t+1</sub>, ..., R<sub>t+m</sub>)</code>, we reconstruct the final time series prediction as:
+$$\sum_{i=1}^{k} \left( R_{t-n}^{(i)}, \ldots, R_{t}^{(i)} \right) \rightarrow \left( R_{t+1}, \ldots, R_{t+m} \right)$$
 
-**(Y<sub>t+1</sub>, ..., Y<sub>t+m</sub>) = (Ŷ<sub>t+1</sub>, ..., Ŷ<sub>t+m</sub>) + (R<sub>t+1</sub>, ..., R<sub>t+m</sub>)**
+where <code>n</code> and <code>m</code> denote the lookback and forecasting horizons, respectively.
 
-ensuring consistency with the original data distribution.
+### 1.4 Inverse Transformation
 
-## Modeling Approaches ##
-We experimented with several sequence modeling architectures, each incorporating different mechanisms for temporal feature extraction:
+Final predictions are reconstructed by adding the forecasted residuals back to the trend estimates:
 
-| Model                          | Description                                                   |
-|-----------------------------------------|--------------------------------------------------------|
-| **SegRNN** | A segment-wise **Recurrent Neural Network (RNN)** that dynamically partitions sequences, improving computational efficiency while preserving recurrent state transitions. |
-| **Simple LSTM** | A **vanilla LSTM** trained on sequential residuals to capture temporal dependencies over fixed-length windows. |
-| **Seq2Seq LSTM** | An **encoder-decoder LSTM** architecture designed for multi-step forecasting, enabling the model to learn dynamic representations across different sequence lengths. |
-| **Attention LSTM** | An **LSTM augmented with an attention mechanism**, allowing selective weighting of past time steps to enhance long-term dependency retention. |
-| **Transformer** | A self-attention-based model that removes recurrence, leveraging **multi-head attention** to capture both local and global dependencies. |
-| **MambaSSM** | A **state-space model (SSM)** optimized for long-range forecasting, leveraging structured state transitions and memory-efficient recurrence to outperform traditional RNN-based architectures. |
+$$\left( Y_{t+1}, \ldots, Y_{t+m} \right) = \left( \hat{Y}_{t+1}, \ldots, \hat{Y}_{t+m} \right) + \left( R_{t+1}, \ldots, R_{t+m} \right)$$
 
-## Results & Findings ##
-- **MambaSSM demonstrated superior performance**, effectively capturing long-range dependencies while maintaining computational efficiency.
-- **Log transformation + residual forecasting significantly improved stability**, leading to better generalization across different time horizons.
-- **MambaSSM outperformed traditional models** such as Simple LSTM and Seq2Seq LSTM, and even the attention-based models, by a significant margin.
+---
+
+## 2. Models
+
+| Model | Description |
+|---|---|
+| SegRNN [1] | A segment-wise RNN that partitions input sequences into fixed-length segments, improving computational efficiency while preserving recurrent state transitions. |
+| Simple LSTM [2] | A vanilla LSTM trained directly on residual sequences over fixed-length windows. |
+| Seq2Seq LSTM [3] | An encoder-decoder LSTM designed for multi-step forecasting, enabling variable-length input-output mappings. |
+| Attention LSTM | An LSTM augmented with an additive attention mechanism, allowing selective weighting of past hidden states. |
+| Transformer [4] | A fully attention-based architecture that removes recurrence, leveraging multi-head self-attention to capture both local and global temporal dependencies. |
+| MambaSSM [5] | A structured state-space model (SSM) with selective state transitions, offering linear-time complexity and strong performance on long-range sequence modeling. |
+
+---
+
+## 3. Results
+
+MambaSSM achieved the best forecasting performance among all tested architectures, with RNN and LSTM baselines (including Seq2Seq and Attention variants) performing comparably to each other but below the Transformer and Mamba models. The log-detrending pipeline consistently improved stability across all architectures relative to training on raw values. See `result.png` for a full comparison.
 
 ![result](./result.png)
 
-## References ##
-Fuck you I wrote them all.
-Okay maybe I will add some references in the future.
+---
+
+## References
+
+[1] Lin, S., Lin, W., Wu, W., Zhao, F., Mo, R., & Zhang, H. (2023). SegRNN: Segment Recurrent Neural Network for Long-Term Time Series Forecasting. *arXiv:2308.11200*. https://arxiv.org/abs/2308.11200
+
+[2] Hochreiter, S., & Schmidhuber, J. (1997). Long Short-Term Memory. *Neural Computation, 9*(8), 1735–1780. https://www.bioinf.jku.at/publications/older/2604.pdf
+
+[3] Sutskever, I., Vinyals, O., & Le, Q. V. (2014). Sequence to Sequence Learning with Neural Networks. *NeurIPS 2014*. https://arxiv.org/abs/1409.3215
+
+[4] Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., & Polosukhin, I. (2017). Attention Is All You Need. *NeurIPS 2017*. https://arxiv.org/abs/1706.03762
+
+[5] Gu, A., & Dao, T. (2023). Mamba: Linear-Time Sequence Modeling with Selective State Spaces. *arXiv:2312.00752*. https://arxiv.org/abs/2312.00752
+
+[6] Gu, A., Goel, K., & Ré, C. (2021). Efficiently Modeling Long Sequences with Structured State Spaces. *ICLR 2022*. https://arxiv.org/abs/2111.00396
