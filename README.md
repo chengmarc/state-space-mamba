@@ -38,7 +38,7 @@ This isolates stationary short-term fluctuations from the global trend, allowing
 
 ### 1.3 Multi-Feature Residual Forecasting
 
-Rather than predicting absolute values, the models are trained to forecast residual sequences. Given <code>k</code> input features, the learned mapping takes the form:
+Rather than predicting absolute values, the models are trained to forecast residual sequences. Given <code>k</code> input features (k=6: mining difficulty, transaction count, active addresses, 30-day active supply, 1-year active supply, and log price), the learned mapping takes the form:
 
 $$\sum_{i=1}^{k} \left( R_{t-n}^{(i)}, \ldots, R_{t}^{(i)} \right) \rightarrow \left( R_{t+1}, \ldots, R_{t+m} \right)$$
 
@@ -61,7 +61,7 @@ $$\left( Y_{t+1}, \ldots, Y_{t+m} \right) = \left( \hat{Y}_{t+1}, \ldots, \hat{Y
 | Seq2Seq LSTM [3] | An encoder-decoder LSTM designed for multi-step forecasting, enabling variable-length input-output mappings. |
 | Attention LSTM | An LSTM augmented with an additive attention mechanism, allowing selective weighting of past hidden states. |
 | Transformer [4] | A fully attention-based architecture that removes recurrence, leveraging multi-head self-attention to capture both local and global temporal dependencies. |
-| MambaSSM [5] | A structured state-space model (SSM) with selective state transitions, offering linear-time complexity and strong performance on long-range sequence modeling. |
+| MambaSSM [5,6] | A structured state-space model (SSM) with selective state transitions, offering linear-time complexity and strong performance on long-range sequence modeling. |
 
 ---
 
@@ -73,7 +73,7 @@ The two primary architectures evaluated in this project are illustrated below.
 
 <div align="center"><img src="./attention.png" width="60%"></div>
 
-**Mamba Block** — selective SSM with dual-branch projection, depthwise convolution, and SiLU gating ([5]):
+**Mamba Block** — selective SSM with dual-branch projection, depthwise convolution, and SiLU gating ([5,6]):
 
 <div align="center"><img src="./mamba.png" width="60%"></div>
 
@@ -100,3 +100,18 @@ MambaSSM achieved the best forecasting performance among all tested architecture
 [5] Gu, A., & Dao, T. (2023). Mamba: Linear-Time Sequence Modeling with Selective State Spaces. *arXiv:2312.00752*. https://arxiv.org/abs/2312.00752
 
 [6] Gu, A., Goel, K., & Ré, C. (2021). Efficiently Modeling Long Sequences with Structured State Spaces. *ICLR 2022*. https://arxiv.org/abs/2111.00396
+
+---
+
+## Appendix: Data Pipelines
+
+Two data pipelines are provided under different feature and trend assumptions:
+
+- **`DataTransformation.py`** — Primary pipeline. Sources on-chain data from CoinMetrics (difficulty, transaction count, active addresses, active supply). Applies logarithmic trend removal. Used in all reported experiments.
+- **`DataTransformation2.py`** — Experimental pipeline. Sources OHLCV data from the Binance API. Applies linear trend removal. Not used in reported results; retained for reference.
+
+---
+
+## Implementation Note
+
+The MambaSSM block implementation (`class/MambaSSM.py`, `class/scans.py`) is adapted from [johnma2006/mamba-minimal](https://github.com/johnma2006/mamba-minimal), a community reference implementation of [5]. The selective scan kernel, RMSNorm, and block structure follow that reference. The forecasting wrapper, input/output projection layers, training loop, and data pipeline are original.
