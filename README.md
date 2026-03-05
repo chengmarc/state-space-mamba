@@ -34,7 +34,7 @@ $$R_t = Y_t - \hat{Y}_t$$
 
 This isolates stationary short-term fluctuations from the global trend, allowing each model to focus on residual dynamics rather than long-run drift. An example of the transformation on a single feature is shown below.
 
-![method](./method.png)
+<div align="center"><img src="./method.png" width="60%"></div>
 
 ### 1.3 Multi-Feature Residual Forecasting
 
@@ -65,15 +65,29 @@ $$\left( Y_{t+1}, \ldots, Y_{t+m} \right) = \left( \hat{Y}_{t+1}, \ldots, \hat{Y
 
 ---
 
-## 3. Results
+## 3. Architecture Diagrams
 
-MambaSSM achieved the best forecasting performance among all tested architectures, with RNN and LSTM baselines (including Seq2Seq and Attention variants) performing comparably to each other but below the Transformer and Mamba models. The log-detrending pipeline consistently improved stability across all architectures relative to training on raw values. See `result.png` for a full comparison.
+The two primary architectures evaluated in this project are illustrated below.
 
-![result](./result.png)
+**Transformer** — encoder-decoder architecture with multi-head self-attention and positional encoding ([4]):
+
+<div align="center"><img src="./attention.png" width="60%"></div>
+
+**Mamba Block** — selective SSM with dual-branch projection, depthwise convolution, and SiLU gating ([5]):
+
+<div align="center"><img src="./mamba.png" width="60%"></div>
 
 ---
 
-## References
+## 4. Results
+
+MambaSSM achieved the best forecasting performance among all tested architectures, with RNN and LSTM baselines (including Seq2Seq and Attention variants) performing comparably to each other but below the Transformer and Mamba models. The log-detrending pipeline consistently improved stability across all architectures relative to training on raw values. See `result.png` for a full comparison.
+
+<div align="center"><img src="./result.png" width="60%"></div>
+
+---
+
+## 5. References
 
 [1] Lin, S., Lin, W., Wu, W., Zhao, F., Mo, R., & Zhang, H. (2023). SegRNN: Segment Recurrent Neural Network for Long-Term Time Series Forecasting. *arXiv:2308.11200*. https://arxiv.org/abs/2308.11200
 
