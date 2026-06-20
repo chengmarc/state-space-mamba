@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Fri Apr 11 03:54:41 2025
+"""ARCHIVED exploratory script — not part of the pipeline.
 
+Fits the log-price trend and plots fixed residual bands as a long-range forecast
+visualisation. The trend-fitting logic now lives in
+pipeline/step_2_feature_engineering.py (fit_log_trend). Kept for reference; run standalone.
+
+Created on Fri Apr 11 03:54:41 2025
 @author: Admin
 """
 import numpy as np

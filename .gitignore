@@ -1,2 +1,10 @@
 __pycache__
 .ipynb_checkpoints
+
+# packaging / editable install
+*.egg-info/
+build/
+dist/
+
+# generated pipeline artifacts (CSVs, JSON params, figures, checkpoints)
+output/

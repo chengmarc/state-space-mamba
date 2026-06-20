@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ssm"
+version = "0.1.0"
+description = "Sequence-to-sequence time series forecasting with a selective state-space model"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "einops",
+    "tqdm",
+    "yfinance",
+]
+
+# src/ layout: the importable package is src/ssm. Install with `pip install -e .`
+# so the top-level pipeline/, training/ and evaluation/ scripts can `import ssm`.
+[tool.setuptools.packages.find]
+where = ["src"]

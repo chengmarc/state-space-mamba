@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-"""
-Created on Tue Mar 11 00:36:53 2025
+"""ARCHIVED exploratory script — not part of the pipeline.
 
+Quick scatter plots of every CoinMetrics column against PriceUSD, used during
+early feature exploration. Superseded by pipeline/step_2_feature_engineering.py.
+Kept for reference; run standalone.
+
+Created on Tue Mar 11 00:36:53 2025
 @author: Admin
 """
 import os
