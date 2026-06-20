@@ -8,18 +8,26 @@ version = "0.1.0"
 description = "Sequence-to-sequence time series forecasting with a selective state-space model"
 readme = "README.md"
 requires-python = ">=3.12"
+# Abstract dependency constraints (lower bounds = versions this project is
+# developed against). Exact, reproducible pins live in requirements.txt.
 dependencies = [
-    "torch",
-    "numpy",
-    "pandas",
-    "scipy",
-    "matplotlib",
-    "einops",
-    "tqdm",
-    "yfinance",
+    "torch>=2.5",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "scipy>=1.13",
+    "matplotlib>=3.8",
+    "einops>=0.8",
+    "tqdm>=4.66",
+    "yfinance>=0.2",
 ]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
 
 # src/ layout: the importable package is src/ssm. Install with `pip install -e .`
 # so the top-level pipeline/, training/ and evaluation/ scripts can `import ssm`.
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

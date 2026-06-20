@@ -17,10 +17,11 @@ from tqdm import tqdm
 
 from ssm.config import (
     MODEL_INPUT_CSV, CHECKPOINT, CHECKPOINT_DIR, TRAIN_META_JSON,
-    TEST_DAYS, HISTORIC_HORIZON, FORECAST_HORIZON,
+    HISTORIC_HORIZON, FORECAST_HORIZON,
     EPOCHS, PATIENCE, LR, BATCH_SIZE, VAL_SPLIT, D_MODEL, N_LAYER,
     ensure_dirs,
 )
+from ssm.splits import holdout_cutoff
 from ssm.data.loader import create_dataloader
 from ssm.arch.mamba import create_model
 
@@ -35,16 +36,20 @@ def train():
     # ── load data, cut off test set ────────────────────────────────────────────
 
     full_data     = pd.read_csv(MODEL_INPUT_CSV, index_col='Date', parse_dates=True)
-    test_boundary = full_data.index[-TEST_DAYS]
-    train_data    = full_data.iloc[:-TEST_DAYS]
+    # Same date-based boundary the trend/normalization fits used in stages 2-3.
+    cutoff        = holdout_cutoff(full_data.index)
+    train_data    = full_data[full_data.index < cutoff]
+    test_boundary = full_data.index[len(train_data)]   # first held-out timestamp
+    test_days     = len(full_data) - len(train_data)
 
     print(f'Full data       : {full_data.index[0].date()} → {full_data.index[-1].date()}  ({len(full_data)} rows)')
     print(f'Train + val     : {train_data.index[0].date()} → {train_data.index[-1].date()}  ({len(train_data)} rows)')
-    print(f'Test (held-out) : {test_boundary.date()} → {full_data.index[-1].date()}  ({TEST_DAYS} rows)\n')
+    print(f'Test (held-out) : {test_boundary.date()} → {full_data.index[-1].date()}  ({test_days} rows)\n')
 
+    # embargo = FORECAST_HORIZON purges train/val target overlap (see train_val_split).
     train_loader, val_loader = create_dataloader(
         train_data, HISTORIC_HORIZON, FORECAST_HORIZON, device,
-        val_split=VAL_SPLIT, batch_size=BATCH_SIZE,
+        val_split=VAL_SPLIT, batch_size=BATCH_SIZE, embargo=FORECAST_HORIZON,
     )
 
     # ── model, optimiser, scheduler ───────────────────────────────────────────
@@ -108,7 +113,7 @@ def train():
 
     meta = {
         'test_boundary':    test_boundary.strftime('%Y-%m-%d'),
-        'test_days':        TEST_DAYS,
+        'test_days':        test_days,
         'historic_horizon': HISTORIC_HORIZON,
         'forecast_horizon': FORECAST_HORIZON,
         'best_epoch':       best_epoch,

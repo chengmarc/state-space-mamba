@@ -1,0 +1,17 @@
+# Exact, reproducible pins (lockfile) for the versions this project is developed
+# against. For the abstract constraints, see pyproject.toml. Install with:
+#     pip install -r requirements.txt && pip install -e .
+#
+# NOTE on torch: the developed-against build is the CUDA 12.8 wheel
+# (torch==2.11.0+cu128), installed from the PyTorch index:
+#     pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+# The bare pin below resolves to the CPU build from PyPI; override per your GPU.
+
+torch==2.11.0
+numpy==2.4.4
+pandas==3.0.3
+scipy==1.17.1
+matplotlib==3.10.9
+einops==0.8.2
+tqdm==4.67.3
+yfinance==1.4.0

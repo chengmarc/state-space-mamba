@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
 from ssm.config import OUTPUT, ODS_CSV, DWH_CSV, TREND_PARAMS_JSON, ensure_dirs
+from ssm.splits import holdout_cutoff
 
 
 # ── config ─────────────────────────────────────────────────────────────────────
@@ -54,12 +55,16 @@ def _log_curve(x, a, b, c):
     return a * np.log(x + c) + b
 
 
-def fit_log_trend(series: pd.Series):
+def fit_log_trend(series: pd.Series, fit_until: pd.Timestamp | None = None):
     """Fit Y = a·log(X+c)+b where X = integer days since series.index[0].
 
-    Returns (trend_series, a, b, c).
+    Parameters are estimated only on rows with ``index < fit_until`` (the training
+    portion) to keep the test set leakage-free, then the fitted curve is evaluated
+    over the full index. Returns (trend_series, a, b, c).
     """
     valid = series.dropna()
+    if fit_until is not None:
+        valid = valid[valid.index < fit_until]
     X_fit = (valid.index - series.index[0]).days.to_numpy(dtype=float)
     Y_fit = valid.to_numpy(dtype=float)
     (a, b, c), _ = curve_fit(_log_curve, X_fit, Y_fit, p0=[1.0, 1.0, 1.0])
@@ -68,12 +73,16 @@ def fit_log_trend(series: pd.Series):
     return trend, a, b, c
 
 
-def fit_supply_trend(series: pd.Series, supply: pd.Series):
+def fit_supply_trend(series: pd.Series, supply: pd.Series, fit_until: pd.Timestamp | None = None):
     """Fit log(feature) = a·log(supply) + b — power-law baseline against issuance.
 
-    Returns (trend_series, a, b).
+    Like :func:`fit_log_trend`, the slope/intercept are estimated only on rows with
+    ``index < fit_until`` and then applied across the full index. Returns
+    (trend_series, a, b).
     """
     valid  = series.notna() & supply.notna() & (supply > 0)
+    if fit_until is not None:
+        valid = valid & (series.index < fit_until)
     X_fit  = np.log(supply[valid].to_numpy(dtype=float))
     Y_fit  = series[valid].to_numpy(dtype=float)
     a, b   = np.polyfit(X_fit, Y_fit, 1)
@@ -121,10 +130,14 @@ def build_dwh() -> tuple[pd.DataFrame, pd.DataFrame]:
     raw = pd.read_csv(ODS_CSV, index_col='Date', parse_dates=True)
     dwh = pd.DataFrame(index=raw.index)
 
+    # Trends are fit only on data before the test cutoff — see ssm.splits.
+    cutoff = holdout_cutoff(raw.index)
+    print(f'Trend fit cutoff (test held out from): {cutoff.date()}')
+
     # ── price: log + log trend + residual ──────────────────────────────────────
 
     log_price = np.log(raw['price_usd'])
-    price_trend, a, b, c = fit_log_trend(log_price)
+    price_trend, a, b, c = fit_log_trend(log_price, fit_until=cutoff)
     ref_date = raw.index[0].strftime('%Y-%m-%d')
 
     dwh['log_price_usd']      = log_price
@@ -140,7 +153,7 @@ def build_dwh() -> tuple[pd.DataFrame, pd.DataFrame]:
     supply = raw['sply_cur']
     for raw_col, dst in SUPPLY_DETREND:
         log_s = np.log(raw[raw_col].replace(0, np.nan))
-        trend, *_ = fit_supply_trend(log_s, supply)
+        trend, *_ = fit_supply_trend(log_s, supply, fit_until=cutoff)
         dwh[dst]               = log_s
         dwh[f'{dst}_trend']    = trend
         dwh[f'{dst}_residual'] = log_s - trend

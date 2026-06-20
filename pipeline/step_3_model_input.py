@@ -15,6 +15,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from ssm.config import OUTPUT, DWH_CSV, MODEL_INPUT_CSV, NORM_PARAMS_JSON, ensure_dirs
+from ssm.splits import holdout_cutoff
 
 
 # ── feature registry ───────────────────────────────────────────────────────────
@@ -40,8 +41,15 @@ FEATURES = [
 
 # ── transforms ─────────────────────────────────────────────────────────────────
 
-def apply_zscore(series: pd.Series) -> tuple[pd.Series, dict]:
-    mean, std = series.mean(), series.std()
+def apply_zscore(series: pd.Series, fit_mask) -> tuple[pd.Series, dict]:
+    """Z-score `series`, estimating mean/std only on the rows selected by `fit_mask`.
+
+    `fit_mask` marks the training rows (before the test cutoff); fitting on them
+    only keeps test-period statistics out of the normalization — a leak otherwise.
+    The transform itself is applied to the full series.
+    """
+    ref = series[fit_mask]
+    mean, std = ref.mean(), ref.std()
     return (series - mean) / std, {'mean': mean, 'std': std}
 
 
@@ -57,11 +65,14 @@ def build_model_input() -> tuple[pd.DataFrame, dict]:
     cols = [col for col, _ in FEATURES]
     data = dwh[cols].dropna().copy()
 
+    # Normalization stats are fit on training rows only — see ssm.splits.
+    fit_mask = data.index < holdout_cutoff(data.index)
+
     norm_params = {}
     for col, transform in FEATURES:
         if transform is None:
             continue
-        data[col], params = TRANSFORMS[transform](data[col])
+        data[col], params = TRANSFORMS[transform](data[col], fit_mask)
         norm_params[col]  = {'transform': transform, **params}
 
     with open(NORM_PARAMS_JSON, 'w') as f:
