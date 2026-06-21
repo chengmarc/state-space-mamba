@@ -1,4 +1,4 @@
-.PHONY: install dev test pipeline data features model-input train evaluate clean
+.PHONY: install dev test pipeline data features dm train evaluate clean
 
 # ── setup ────────────────────────────────────────────────────────────────────
 install:        ## editable install of the ssm package
@@ -18,16 +18,16 @@ data:           ## stage 1 — data ingestion
 features:       ## stage 2 — feature engineering
 	python pipeline/step_2_feature_engineering.py
 
-model-input:    ## stage 3 — model input assembly
-	python pipeline/step_3_model_input.py
+dm:             ## stage 3 — DM assembly
+	python pipeline/step_3_dm.py
 
 train:          ## stage 4 — train
-	python training/step_4_train.py
+	python pipeline/step_4_train.py
 
 evaluate:       ## stage 5 — evaluate
-	python evaluation/step_5_evaluate.py
+	python pipeline/step_5_evaluate.py
 
-pipeline: data features model-input train evaluate  ## run all five stages in order
+pipeline: data features dm train evaluate  ## run all five stages in order
 
 # ── housekeeping ─────────────────────────────────────────────────────────────
 clean:          ## remove generated artifacts and caches

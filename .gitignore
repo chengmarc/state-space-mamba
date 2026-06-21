@@ -5,6 +5,3 @@ __pycache__
 *.egg-info/
 build/
 dist/
-
-# generated pipeline artifacts (CSVs, JSON params, figures, checkpoints)
-output/

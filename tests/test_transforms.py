@@ -8,7 +8,7 @@ import pandas as pd
 
 # step_3 is a pipeline script, not a package module — load it by path.
 _spec = importlib.util.spec_from_file_location(
-    "step_3", Path(__file__).resolve().parents[1] / "pipeline" / "step_3_model_input.py"
+    "step_3", Path(__file__).resolve().parents[1] / "pipeline" / "step_3_dm.py"
 )
 step_3 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(step_3)

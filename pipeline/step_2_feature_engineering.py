@@ -1,12 +1,20 @@
 """Stage 2 — feature engineering.
 
-Reads the ODS, builds the data warehouse (DWH) of model features: log-detrended
-price and on-chain residuals, technical oscillators (Williams %R, NMD), realized
-volatility and macro features. Also persists the fitted price-trend parameters so
-stage 5 can reconstruct absolute prices from residual forecasts.
+Reads the ODS and builds the feature warehouse (DWD).  Only features with
+empirically validated win-rate signal (proved in winrate-matrix) are computed:
+
+  - price decomposition : log price, fitted log trend, residual
+  - valuation           : MVRV ratio
+  - volatility          : 30-day realized vol
+  - cycle               : years since halving
+  - macro               : DXY 30-day and 100-day returns
+  - technical           : Williams %R (short + long), oversold composite
+
+Also persists the fitted price-trend parameters so stage 5 can reconstruct
+absolute prices from residual forecasts.
 
     Input : config.ODS_CSV
-    Output: config.DWH_CSV, config.TREND_PARAMS_JSON, step2_fig*.png
+    Output: config.DWD_CSV, config.TREND_PARAMS_JSON, step2_fig*.png
 """
 
 import json
@@ -16,33 +24,15 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
-from ssm.config import OUTPUT, ODS_CSV, DWH_CSV, TREND_PARAMS_JSON, ensure_dirs
+from ssm.config import OUTPUT, ODS_CSV, DWD_CSV, TREND_PARAMS_JSON, HALVING_DATES, ensure_dirs
 from ssm.splits import holdout_cutoff
 
 
 # ── config ─────────────────────────────────────────────────────────────────────
 
-# On-chain features detrended against log(supply).
-# Each tuple: (raw_col_in_ods, output_prefix_in_dwh)
-SUPPLY_DETREND = [
-    ('hash_rate',    'log_hash_rate'),
-    ('tx_cnt',       'log_tx_cnt'),
-    ('adr_act_cnt',  'log_adr_act_cnt'),
-]
-
-# Williams %R variants.
-# Each tuple: (output_col, wr_length, ema_smoothing_span)
 WILLIAMS_R = [
     ('short_percent_r', 21,  7),
     ('long_percent_r',  112, 3),
-]
-
-# Normalized Maximum Drawdown variants.
-# Each tuple: (output_col, lookback_bars, normalize_by)
-NMD = [
-    ('nmd_730', 730, 730),
-    ('nmd_365', 365, 730),
-    ('nmd_90',   90, 730),
 ]
 
 REALIZED_VOL_WINDOW = 30
@@ -56,43 +46,54 @@ def _log_curve(x, a, b, c):
 
 
 def fit_log_trend(series: pd.Series, fit_until: pd.Timestamp | None = None):
-    """Fit Y = a·log(X+c)+b where X = integer days since series.index[0].
+    """Expanding-window log trend with no future data leakage.
 
-    Parameters are estimated only on rows with ``index < fit_until`` (the training
-    portion) to keep the test set leakage-free, then the fitted curve is evaluated
-    over the full index. Returns (trend_series, a, b, c).
+    Step 1 — estimate c once on training rows using nonlinear curve_fit.
+    Step 2 — fix c and compute a_t, b_t at every row via cumulative OLS,
+              so residual[t] only uses data available up to t.
+
+    Returns (trend_series, a_final, b_final, c) where a_final/b_final are
+    the parameters at the last row (used by step 5 for future extrapolation).
     """
     valid = series.dropna()
     if fit_until is not None:
         valid = valid[valid.index < fit_until]
     X_fit = (valid.index - series.index[0]).days.to_numpy(dtype=float)
     Y_fit = valid.to_numpy(dtype=float)
-    (a, b, c), _ = curve_fit(_log_curve, X_fit, Y_fit, p0=[1.0, 1.0, 1.0])
-    X_full = (series.index - series.index[0]).days.to_numpy(dtype=float)
-    trend  = pd.Series(_log_curve(X_full, a, b, c), index=series.index)
-    return trend, a, b, c
+    (_, _, c), _ = curve_fit(_log_curve, X_fit, Y_fit, p0=[1.0, 1.0, 1.0])
 
+    # Expanding OLS with fixed c — O(n) via cumulative sums
+    idx    = series.index
+    X_days = (idx - idx[0]).days.to_numpy(dtype=float)
+    log_x  = np.log(X_days + c)
+    y      = series.values.copy()
 
-def fit_supply_trend(series: pd.Series, supply: pd.Series, fit_until: pd.Timestamp | None = None):
-    """Fit log(feature) = a·log(supply) + b — power-law baseline against issuance.
+    trend    = np.full(len(y), np.nan)
+    a_final  = b_final = np.nan
+    cum_n = cum_x = cum_y = cum_xx = cum_xy = 0.0
+    MIN_PERIODS = 730   # require 2 years before trusting the trend
 
-    Like :func:`fit_log_trend`, the slope/intercept are estimated only on rows with
-    ``index < fit_until`` and then applied across the full index. Returns
-    (trend_series, a, b).
-    """
-    valid  = series.notna() & supply.notna() & (supply > 0)
-    if fit_until is not None:
-        valid = valid & (series.index < fit_until)
-    X_fit  = np.log(supply[valid].to_numpy(dtype=float))
-    Y_fit  = series[valid].to_numpy(dtype=float)
-    a, b   = np.polyfit(X_fit, Y_fit, 1)
-    X_full = np.where(supply > 0, np.log(supply.clip(lower=1e-10)), np.nan)
-    trend  = pd.Series(a * X_full + b, index=series.index)
-    return trend, a, b
+    for t, (lx, yt) in enumerate(zip(log_x, y)):
+        if not np.isnan(yt):
+            cum_n  += 1
+            cum_x  += lx
+            cum_y  += yt
+            cum_xx += lx * lx
+            cum_xy += lx * yt
+        if cum_n < MIN_PERIODS:
+            continue
+        denom = cum_n * cum_xx - cum_x ** 2
+        if abs(denom) < 1e-12:
+            continue
+        a = (cum_n * cum_xy - cum_x * cum_y) / denom
+        b = (cum_y - a * cum_x) / cum_n
+        trend[t] = a * log_x[t] + b
+        a_final, b_final = a, b
+
+    return pd.Series(trend, index=idx), a_final, b_final, c
 
 
 def williams_r(high: pd.Series, low: pd.Series, close: pd.Series, length: int) -> pd.Series:
-    """Williams %R: 100 * (close - highest_high) / (highest_high - lowest_low). Range [-100, 0]."""
     hh = high.rolling(length).max()
     ll  = low.rolling(length).min()
     return 100.0 * (close - hh) / (hh - ll)
@@ -111,26 +112,23 @@ def ema(values: pd.Series, span: int) -> pd.Series:
     return pd.Series(out, index=values.index)
 
 
-def compute_nmd(price: pd.Series, lookback: int, normalize_by: int) -> pd.Series:
-    """Fraction of bars in `lookback` window that closed higher than current bar.
-
-    Normalized by `normalize_by` so all variants share a common scale. Range [0, 1].
-    """
-    p      = price.to_numpy(dtype=float)
-    n      = len(p)
-    result = np.zeros(n)
-    for i in range(lookback + 1, n):
-        result[i] = np.sum(p[i - lookback:i] > p[i])
-    return pd.Series(result / normalize_by, index=price.index)
+def years_since_halving(index: pd.DatetimeIndex) -> pd.Series:
+    """Continuous years since the last BTC halving."""
+    dates = pd.to_datetime(index)
+    years = np.zeros(len(dates), dtype=float)
+    for i, dt in enumerate(dates):
+        eligible = HALVING_DATES[HALVING_DATES <= dt]
+        last_halving = eligible.max() if len(eligible) else HALVING_DATES.min()
+        years[i] = max(0, (dt - last_halving).days) / 365.25
+    return pd.Series(years, index=index)
 
 
-# ── build DWH ─────────────────────────────────────────────────────────────────
+# ── build DWD ─────────────────────────────────────────────────────────────────
 
-def build_dwh() -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_dwd() -> tuple[pd.DataFrame, pd.DataFrame]:
     raw = pd.read_csv(ODS_CSV, index_col='Date', parse_dates=True)
     dwh = pd.DataFrame(index=raw.index)
 
-    # Trends are fit only on data before the test cutoff — see ssm.splits.
     cutoff = holdout_cutoff(raw.index)
     print(f'Trend fit cutoff (test held out from): {cutoff.date()}')
 
@@ -148,38 +146,34 @@ def build_dwh() -> tuple[pd.DataFrame, pd.DataFrame]:
         json.dump({'a': a, 'b': b, 'c': c, 'ref_date': ref_date}, f, indent=2)
     print(f'Trend params: a={a:.4f}  b={b:.4f}  c={c:.4f}  ref={ref_date}')
 
-    # ── on-chain: supply-detrended features ────────────────────────────────────
-
-    supply = raw['sply_cur']
-    for raw_col, dst in SUPPLY_DETREND:
-        log_s = np.log(raw[raw_col].replace(0, np.nan))
-        trend, *_ = fit_supply_trend(log_s, supply, fit_until=cutoff)
-        dwh[dst]               = log_s
-        dwh[f'{dst}_trend']    = trend
-        dwh[f'{dst}_residual'] = log_s - trend
+    # ── valuation ──────────────────────────────────────────────────────────────
 
     dwh['mvrv'] = raw['mvrv']
 
-    # ── Williams %R ────────────────────────────────────────────────────────────
+    # ── volatility ─────────────────────────────────────────────────────────────
+
+    log_returns = np.log(raw['price_usd'] / raw['price_usd'].shift(1))
+    dwh['realized_vol_30'] = (
+        log_returns.rolling(REALIZED_VOL_WINDOW).std() * np.sqrt(TRADING_DAYS) * 100
+    )
+
+    # ── cycle ──────────────────────────────────────────────────────────────────
+
+    dwh['years_since_halving'] = years_since_halving(raw.index)
+
+    # ── macro: DXY returns ─────────────────────────────────────────────────────
+
+    dwh['dxy']         = raw['dxy']
+    dwh['dxy_ret_30']  = raw['dxy'].pct_change(30)
+    dwh['dxy_ret_100'] = raw['dxy'].pct_change(100)
+
+    # ── technical: Williams %R + oversold composite ────────────────────────────
 
     for col, length, ema_span in WILLIAMS_R:
-        raw_wr  = williams_r(raw['high'], raw['low'], raw['close'], length)
-        dwh[col] = (ema(raw_wr, ema_span) + 100) / 100   # rescale [-100,0] → [0,1]
+        raw_wr   = williams_r(raw['high'], raw['low'], raw['close'], length)
+        dwh[col] = (ema(raw_wr, ema_span) + 100) / 100
 
-    # ── NMD ───────────────────────────────────────────────────────────────────
-
-    print('Computing NMD features...')
-    for col, lookback, normalize_by in NMD:
-        dwh[col] = compute_nmd(raw['price_usd'], lookback, normalize_by)
-
-    # ── realized volatility ───────────────────────────────────────────────────
-
-    log_returns        = np.log(raw['price_usd'] / raw['price_usd'].shift(1))
-    dwh['realized_vol_30'] = log_returns.rolling(REALIZED_VOL_WINDOW).std() * np.sqrt(TRADING_DAYS) * 100
-
-    # ── macro ─────────────────────────────────────────────────────────────────
-
-    dwh['cpi_yoy'] = (raw['cpi'] / raw['cpi'].shift(TRADING_DAYS) - 1.0) * 100.0
+    dwh['wr_composite'] = (1 - dwh['short_percent_r']) * (1 - dwh['long_percent_r'])
 
     return dwh, raw
 
@@ -212,94 +206,41 @@ def plot_price(dwh: pd.DataFrame, raw: pd.DataFrame) -> None:
     print('Saved → step2_fig1_price.png')
 
 
-def plot_onchain(dwh: pd.DataFrame) -> None:
-    panels = [(dst, f'{dst}_residual', label) for dst, label in [
-        ('log_hash_rate',   'Hash Rate'),
-        ('log_tx_cnt',      'Transaction Count'),
-        ('log_adr_act_cnt', 'Active Addresses'),
-    ]] + [('mvrv', None, 'MVRV Ratio')]
-
-    fig, axes = plt.subplots(len(panels), 2, figsize=(16, 4 * len(panels)), sharex=True)
-    fig.suptitle('On-Chain Features: Log vs Residual', fontsize=14)
-
-    for i, (log_col, resid_col, label) in enumerate(panels):
-        ax_l, ax_r = axes[i, 0], axes[i, 1]
-
-        ax_l.plot(dwh.index, dwh[log_col], color='steelblue', linewidth=0.8)
-        trend_col = f'{log_col}_trend'
-        if trend_col in dwh.columns:
-            ax_l.plot(dwh.index, dwh[trend_col], color='red', linestyle='--', linewidth=1.0, label='trend')
-            ax_l.legend(fontsize=8)
-        ax_l.set_title(f'{label} — Log')
-        ax_l.grid(linestyle=':')
-
-        if resid_col:
-            ax_r.plot(dwh.index, dwh[resid_col], color='green', linewidth=0.8)
-            ax_r.axhline(0, color='black', linestyle=':', linewidth=0.6)
-            ax_r.set_title(f'{label} — Residual (supply-detrended)')
-            ax_r.grid(linestyle=':')
-        else:
-            ax_r.axis('off')
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT / 'step2_fig2_onchain.png', dpi=150)
-    plt.close()
-    print('Saved → step2_fig2_onchain.png')
-
-
-def plot_oscillators(dwh: pd.DataFrame) -> None:
-    panels = (
-        [(col, f'Short %R  ({length}-bar, EMA-{ema_span})', (0, 1), 'purple')
-         for col, length, ema_span in WILLIAMS_R] +
-        [(col, f'NMD {lookback}-bar', (0, 1), c)
-         for (col, lookback, _), c in zip(NMD, ['crimson', 'darkorange', 'gold'])]
-    )
-
-    fig, axes = plt.subplots(len(panels), 1, figsize=(14, 3.5 * len(panels)), sharex=True)
-    fig.suptitle('Technical Oscillators', fontsize=14)
-
-    for ax, (col, title, ylim, color) in zip(axes, panels):
-        ax.plot(dwh.index, dwh[col], color=color, linewidth=0.8)
-        ax.set_ylim(*ylim)
-        ax.axhline(sum(ylim) / 2, color='gray', linestyle=':', linewidth=0.6)
-        ax.set_title(title)
-        ax.grid(linestyle=':')
-
-    plt.tight_layout()
-    plt.savefig(OUTPUT / 'step2_fig3_oscillators.png', dpi=150)
-    plt.close()
-    print('Saved → step2_fig3_oscillators.png')
-
-
-def plot_macro(dwh: pd.DataFrame) -> None:
-    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
-    fig.suptitle('Macro & Volatility Features', fontsize=14)
+def plot_signals(dwh: pd.DataFrame) -> None:
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+    fig.suptitle('Validated Signal Features', fontsize=14)
 
     axes[0].plot(dwh.index, dwh['realized_vol_30'], color='darkorange', linewidth=0.8)
-    axes[0].set_title(f'{REALIZED_VOL_WINDOW}-Day Realized Volatility (annualised %)')
+    axes[0].axhline(18.31, color='red', linestyle='--', linewidth=0.9, label='18.31 threshold (89–99% win rate)')
+    axes[0].set_title('30-Day Realized Volatility (annualised %)')
+    axes[0].legend(fontsize=9)
     axes[0].grid(linestyle=':')
 
-    axes[1].plot(dwh.index, dwh['cpi_yoy'], color='crimson', linewidth=0.8)
-    axes[1].axhline(2.0, color='gray', linestyle=':', linewidth=0.8, label='2% target')
-    axes[1].set_title('CPI YoY (%)')
+    axes[1].plot(dwh.index, dwh['dxy_ret_30'],  color='steelblue', linewidth=0.8, label='DXY ret 30d')
+    axes[1].plot(dwh.index, dwh['dxy_ret_100'], color='navy',      linewidth=0.8, label='DXY ret 100d', alpha=0.7)
+    axes[1].axhline(0, color='black', linestyle=':', linewidth=0.6)
+    axes[1].set_title('DXY Returns — macro regime signal')
     axes[1].legend(fontsize=9)
     axes[1].grid(linestyle=':')
 
+    axes[2].plot(dwh.index, dwh['years_since_halving'], color='purple', linewidth=0.8)
+    axes[2].set_title('Years Since Last Halving')
+    axes[2].grid(linestyle=':')
+
     plt.tight_layout()
-    plt.savefig(OUTPUT / 'step2_fig4_macro.png', dpi=150)
+    plt.savefig(OUTPUT / 'step2_fig2_signals.png', dpi=150)
     plt.close()
-    print('Saved → step2_fig4_macro.png')
+    print('Saved → step2_fig2_signals.png')
 
 
 if __name__ == '__main__':
     ensure_dirs()
-    dwh, raw = build_dwh()
-
-    dwh.to_csv(DWH_CSV)
-    print(f'\nDWH saved → {DWH_CSV}  ({dwh.shape[0]} rows × {dwh.shape[1]} cols)')
+    dwh, raw = build_dwd()
+    dwh.to_csv(DWD_CSV)
+    print(f'\nDWD saved → {DWD_CSV}  ({dwh.shape[0]} rows × {dwh.shape[1]} cols)')
+    print(f'Date range : {dwh.index[0].date()} → {dwh.index[-1].date()}')
+    print(f'Columns    : {list(dwh.columns)}')
 
     print('\nGenerating figures...')
     plot_price(dwh, raw)
-    plot_onchain(dwh)
-    plot_oscillators(dwh)
-    plot_macro(dwh)
+    plot_signals(dwh)

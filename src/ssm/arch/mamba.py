@@ -1,14 +1,8 @@
-"""MambaSSM forecasting model.
+"""MambaSSM regression model for log-price residual forecasting.
 
-A selective state-space model adapted for multi-feature sequence-to-sequence
-forecasting. The block structure (selective scan, RMSNorm, dual-branch
-projection) follows the community reference implementation
-`johnma2006/mamba-minimal`; the forecasting wrapper — input/output projection and
-the trailing-window output head — is project-specific.
-
-The model maps an input window of shape ``(batch, length, input_dimension)`` to a
-forecast of shape ``(batch, output_length, 1)``, taking the last ``output_length``
-positions of the final hidden sequence as the prediction.
+Given a sequence of slice snapshots of shape (batch, n_slices, n_features),
+predicts the log-price residual at t+predict_window.  The model outputs one
+scalar per prediction step; use MSE loss during training.
 """
 
 import math
@@ -25,15 +19,16 @@ from .scans import selective_scan
 
 @dataclass
 class ModelArgs:
-    d_model: int
-    n_layer: int
-    d_state: int = 16
-    expand: int = 2
-    dt_rank: Union[int, str] = 'auto'
-    d_conv: int = 4
+    d_model:   int
+    n_layer:   int
+    d_state:   int = 16
+    expand:    int = 2
+    dt_rank:   Union[int, str] = 'auto'
+    d_conv:    int = 4
     conv_bias: bool = True
-    bias: bool = False
-    scan_mode: str = 'logcumsumexp'
+    bias:      bool = False
+    scan_mode: str  = 'logcumsumexp'
+    dropout:   float = 0.1
 
     def __post_init__(self):
         self.d_inner = int(self.expand * self.d_model)
@@ -43,33 +38,36 @@ class ModelArgs:
 
 class MambaSSM(nn.Module):
 
-    def __init__(self, args: ModelArgs, input_dimension: int, output_length: int):
+    def __init__(self, args: ModelArgs, input_dimension: int, n_horizons: int):
         super().__init__()
         self.args = args
-        self.output_length = output_length
 
-        self.input_layer  = nn.Linear(input_dimension, args.d_model)
-        self.layers       = nn.ModuleList([ResidualBlock(args) for _ in range(args.n_layer)])
-        self.norm_f       = RMSNorm(args.d_model)
-        self.output_layer = nn.Linear(args.d_model, 1)
+        self.input_layer = nn.Linear(input_dimension, args.d_model)
+        self.layers      = nn.ModuleList([ResidualBlock(args) for _ in range(args.n_layer)])
+        self.norm_f      = RMSNorm(args.d_model)
+        self.dropout     = nn.Dropout(args.dropout)
+        # One logit per prediction horizon.
+        self.head        = nn.Linear(args.d_model, n_horizons)
 
     def forward(self, x):
-        x = self.input_layer(x)
+        x    = self.input_layer(x)
         for layer in self.layers:
             x = layer(x)
-        x = self.norm_f(x)
-        return self.output_layer(x[:, -self.output_length:, :])
+        x    = self.norm_f(x)
+        last = self.dropout(x[:, -1, :])   # (batch, d_model) — richest context
+        return self.head(last)              # (batch, n_horizons) — raw logits
 
 
 class ResidualBlock(nn.Module):
 
     def __init__(self, args: ModelArgs):
         super().__init__()
-        self.mixer = MambaBlock(args)
-        self.norm  = RMSNorm(args.d_model)
+        self.mixer   = MambaBlock(args)
+        self.norm    = RMSNorm(args.d_model)
+        self.dropout = nn.Dropout(args.dropout)
 
     def forward(self, x):
-        return self.mixer(self.norm(x)) + x
+        return self.dropout(self.mixer(self.norm(x))) + x
 
 
 class MambaBlock(nn.Module):
@@ -129,16 +127,11 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
-def create_model(data, forecast_horizon: int, device, d_model: int = 32, n_layer: int = 8):
-    """Build a :class:`MambaSSM` sized for ``data`` and move it to ``device``.
-
-    ``data`` is the feature DataFrame; its column count fixes the model's input
-    dimension. ``forecast_horizon`` sets the output length. ``d_model`` and
-    ``n_layer`` default to the values used in the reported experiments; callers
-    typically pass the project defaults from :mod:`ssm.config`.
-    """
+def create_model(data, n_horizons: int, device, d_model: int = 32, n_layer: int = 3, dropout: float = 0.1):
+    """Build a MambaSSM classifier for ``n_horizons`` binary direction outputs."""
     input_dimension = len(data.columns)
-    args  = ModelArgs(d_model=d_model, n_layer=n_layer)
-    model = MambaSSM(args, input_dimension, forecast_horizon).to(device)
-    print(f'MambaSSM initialised — input_dim={input_dimension}  d_model={d_model}  n_layer={n_layer}')
+    args  = ModelArgs(d_model=d_model, n_layer=n_layer, dropout=dropout)
+    model = MambaSSM(args, input_dimension, n_horizons).to(device)
+    print(f'MambaSSM initialised — input_dim={input_dimension}  d_model={d_model}  '
+          f'n_layer={n_layer}  dropout={dropout}  n_horizons={n_horizons}')
     return model

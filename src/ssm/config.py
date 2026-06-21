@@ -6,20 +6,22 @@ next, and the horizon / model / training hyperparameters used by more than one
 stage.
 
 Stage-*internal* structural config stays in its own stage on purpose — e.g. the
-feature registry in ``step_3_model_input`` and the oscillator/detrend tables in
+feature registry in ``step_3_dm`` and the oscillator/detrend tables in
 ``step_2_feature_engineering``. Those are local to one stage's logic, not a knob
 shared across the pipeline, so centralising them here would only hurt locality.
 
 Pipeline data flow (each stage reads the previous stage's artifacts)::
 
     step_1_data_ingestion      ──▶  ODS_CSV
-    step_2_feature_engineering ──▶  DWH_CSV, TREND_PARAMS_JSON        (reads ODS_CSV)
-    step_3_model_input         ──▶  MODEL_INPUT_CSV, NORM_PARAMS_JSON (reads DWH_CSV)
-    step_4_train               ──▶  CHECKPOINT, TRAIN_META_JSON       (reads MODEL_INPUT_CSV)
+    step_2_feature_engineering ──▶  DWD_CSV, TREND_PARAMS_JSON (reads ODS_CSV)
+    step_3_dm                  ──▶  DM_CSV, NORM_PARAMS_JSON   (reads DWD_CSV)
+    step_4_train               ──▶  CHECKPOINT, TRAIN_META_JSON (reads DM_CSV)
     step_5_evaluate            ──▶  figures + metrics                 (reads all of the above)
 """
 
 from pathlib import Path
+
+import pandas as pd
 
 # ── directories ──────────────────────────────────────────────────────────────
 # config.py lives at <root>/src/ssm/config.py, so the repo root is parents[2].
@@ -29,28 +31,47 @@ CHECKPOINT_DIR = OUTPUT / "checkpoints"
 
 # ── stage artifacts (the inter-stage contract) ───────────────────────────────
 ODS_CSV           = OUTPUT / "step1_ods.csv"
-DWH_CSV           = OUTPUT / "step2_dwh.csv"
-MODEL_INPUT_CSV   = OUTPUT / "step3_model_input.csv"
+DWD_CSV           = OUTPUT / "step2_dwd.csv"
+DM_CSV            = OUTPUT / "step3_dm.csv"
 TREND_PARAMS_JSON = OUTPUT / "trend_params.json"
 NORM_PARAMS_JSON  = OUTPUT / "norm_params.json"
 CHECKPOINT        = CHECKPOINT_DIR / "MambaSSM_best.pt"
 TRAIN_META_JSON   = OUTPUT / "train_meta.json"
 
-# ── horizons (windowing contract shared by train + evaluate) ─────────────────
-TEST_DAYS        = 365   # tail held out entirely — never seen during training
-HISTORIC_HORIZON = 730   # lookback window fed to the model
-FORECAST_HORIZON = 90    # prediction horizon
+# ── windowing contract shared by train + evaluate ────────────────────────────
+TEST_DAYS      = 365   # last year of data held out completely
+
+# Each slice is a single-day snapshot at this many days before the anchor t.
+# Ordered oldest → newest; offset=0 is today (the anchor itself).
+SLICE_OFFSETS  = [365, 180, 90, 75, 65, 55, 30]
+
+PREDICT_WINDOW = 1     # days ahead to predict (t+1 residual)
+
+# ── domain constants ─────────────────────────────────────────────────────────
+# All known + estimated future halvings. Used by step_2 (historical features)
+# and step_5 (rollout). Including future dates is safe for historical lookups —
+# they are never selected because no observed date reaches them yet.
+HALVING_DATES = pd.to_datetime([
+    '2012-11-28',
+    '2016-07-09',
+    '2020-05-11',
+    '2024-04-20',
+    '2028-04-20',   # estimated
+])
 
 # ── training hyperparameters ─────────────────────────────────────────────────
-EPOCHS     = 1000
-PATIENCE   = 30          # early-stopping: epochs without val improvement before stopping
-LR         = 1e-3
-BATCH_SIZE = 32
-VAL_SPLIT  = 0.1         # last fraction of windows held out for validation
+EPOCHS       = 1000
+PATIENCE     = 1000
+LR           = 3e-4
+BATCH_SIZE   = 32
+VAL_SPLIT    = 0.15
+VAL_SEED     = 42     # random seed for val split; windows are not sequential so random is fine
+WEIGHT_DECAY = 1e-3
 
 # ── model hyperparameters ────────────────────────────────────────────────────
 D_MODEL = 32
-N_LAYER = 8
+N_LAYER = 3
+DROPOUT = 0.1
 
 
 def ensure_dirs() -> None:

@@ -25,7 +25,7 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 # src/ layout: the importable package is src/ssm. Install with `pip install -e .`
-# so the top-level pipeline/, training/ and evaluation/ scripts can `import ssm`.
+# so the top-level pipeline/ scripts can `import ssm`.
 [tool.setuptools.packages.find]
 where = ["src"]
 

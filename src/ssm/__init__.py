@@ -7,7 +7,6 @@ This package holds the reusable building blocks of the project:
     ssm.arch.scans    the selective-scan kernel used by the Mamba block
     ssm.data.loader   windowing + DataLoader construction from a feature frame
 
-The runnable pipeline (data ingestion → feature engineering → model input →
-training → evaluation) lives in the top-level ``pipeline/``, ``training/`` and
-``evaluation/`` directories and imports from this package.
+The runnable pipeline (data ingestion → feature engineering → DM assembly →
+training → evaluation) lives entirely in ``pipeline/`` and imports from this package.
 """
