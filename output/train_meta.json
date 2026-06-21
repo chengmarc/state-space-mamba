@@ -1,0 +1,27 @@
+{
+  "test_boundary": "2025-06-17",
+  "test_days": 366,
+  "slice_offsets": [
+    365,
+    180,
+    90,
+    75,
+    65,
+    55,
+    30
+  ],
+  "predict_window": 1,
+  "d_model": 32,
+  "n_layer": 3,
+  "dropout": 0.1,
+  "best_epoch": 863,
+  "best_val_loss": 0.0012134572196587483,
+  "run_config": {
+    "epochs": 1000,
+    "patience": 1000,
+    "lr": 0.0003,
+    "batch_size": 32,
+    "val_split": 0.15,
+    "weight_decay": 0.001
+  }
+}
