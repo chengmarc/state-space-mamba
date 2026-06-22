@@ -199,6 +199,71 @@ def plot_evaluation(history: pd.DataFrame, forecast: pd.DataFrame, trend_params:
     print(f'Saved → {path.name}')
 
 
+def hindcast_rollout(model, data: pd.DataFrame, meta: dict, device, n_days: int = 365) -> pd.DataFrame:
+    """Slide the model over the last n_days of observed data using real inputs.
+
+    At each anchor t the windows are built from actual observed features
+    (teacher-forced, no autoregression). Only the t+1 step prediction is
+    recorded and compared to the actual next-day residual.
+    """
+    window_anchors, window_len = require_meta(meta, 'window_anchors', 'window_len')
+    inputs = data[INPUT_FEATURE_COLUMNS]
+    max_offset = max(window_anchors) + window_len - 1
+    end_idx   = len(data) - 1          # last anchor with a known t+1 actual
+    start_idx = max(max_offset, end_idx - n_days)
+
+    records = []
+    model.eval()
+    with torch.no_grad():
+        for t in range(start_idx, end_idx):
+            windows = [[inputs.iloc[t - a - d].values for d in range(window_len - 1, -1, -1)]
+                       for a in window_anchors]
+            x    = torch.tensor(np.array([windows], dtype=np.float32)).to(device)
+            pred = float(model(x).reshape(-1)[0].cpu())
+            records.append({
+                'date':                  data.index[t],
+                'predicted_residual_t1': pred,
+                'actual_residual_t1':    float(data['log_price_residual'].iloc[t + 1]),
+            })
+
+    return pd.DataFrame(records).set_index('date')
+
+
+def plot_hindcast(hindcast: pd.DataFrame, trend_params: dict) -> None:
+    pred_prices   = reconstruct_prices(
+        hindcast.index + pd.Timedelta(days=1),
+        hindcast['predicted_residual_t1'].to_numpy(dtype=float), trend_params,
+    )
+    actual_prices = reconstruct_prices(
+        hindcast.index + pd.Timedelta(days=1),
+        hindcast['actual_residual_t1'].to_numpy(dtype=float), trend_params,
+    )
+
+    fig, (ax_res, ax_px) = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
+    fig.suptitle('Hindcast — model predictions vs actual (last year, teacher-forced)', fontsize=13)
+
+    ax_res.plot(hindcast.index, hindcast['actual_residual_t1'],    color=DEEP_BLUE, linewidth=1.0, label='actual')
+    ax_res.plot(hindcast.index, hindcast['predicted_residual_t1'], color='tomato',  linewidth=1.0, linestyle='--', label='predicted (t+1)')
+    ax_res.axhline(0, color='grey', linewidth=0.5, linestyle=':')
+    ax_res.set_ylabel('log-price residual')
+    ax_res.legend(fontsize=9)
+    ax_res.grid(linestyle=':', linewidth=0.5)
+
+    ax_px.plot(hindcast.index, actual_prices, color=PALE_BLUE, linewidth=1.4, label='actual price')
+    ax_px.plot(hindcast.index, pred_prices,   color='tomato',  linewidth=1.0, linestyle='--', label='predicted price (t+1)')
+    ax_px.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'${x:,.0f}'))
+    ax_px.set_ylabel('BTC price (USD)')
+    ax_px.set_xlabel('date')
+    ax_px.legend(fontsize=9)
+    ax_px.grid(linestyle=':', linewidth=0.5)
+
+    plt.tight_layout()
+    path = OUTPUT / 'step5_fig_hindcast.png'
+    plt.savefig(path, dpi=150)
+    plt.close()
+    print(f'Saved → {path.name}')
+
+
 def evaluate():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device: {device}\n')
@@ -232,6 +297,10 @@ def evaluate():
     csv_path = OUTPUT / 'step5_rollout.csv'
     forecast.to_csv(csv_path, float_format='%.6f')
     print(f'Saved → {csv_path.name}')
+
+    print('\nRunning hindcast (last 365 days, teacher-forced)...')
+    hindcast = hindcast_rollout(model, data, meta, device, n_days=365)
+    plot_hindcast(hindcast, trend_params)
 
 
 if __name__ == '__main__':

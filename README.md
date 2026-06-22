@@ -189,6 +189,10 @@ The `TARGET_VAL_LOSS ≤ 0.015` guardrail is derived from this experiment: it ma
 
 This repository retains only the production pipeline. The chronological evaluation scripts are not checked in.
 
+The figure below shows the model run teacher-forced over the last year of observed data — real inputs at every step, no autoregression. It is an in-sample hindcast, not a held-out evaluation, and reflects the overfitting dynamic described above.
+
+<div align="center"><img src="./output/step5_fig_hindcast.png" width="90%"></div>
+
 ### 5.3 Synthetic Future Rollout
 
 Stage 5 performs a **synthetic future rollout** beyond the last observed date:
