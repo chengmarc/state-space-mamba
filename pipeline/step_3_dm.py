@@ -3,14 +3,14 @@
 Selects the empirically validated features from the DWD and writes the final
 DM frame plus normalization parameters.
 
-Feature set (proven in winrate-matrix; README is the SSoT):
+Feature set for the forecasting model:
 
   - cycle      : `years_since_halving`
   - volatility : `realized_vol_30`
   - macro      : `dxy_ret_30`, `dxy_ret_100`
   - technical  : `short_percent_r`, `long_percent_r`, `wr_composite`
-  - valuation  : `log_price_residual`  (input context — current distance from trend)
-  - target     : `log_price_usd`  ← must be last (contract with loader + train)
+  - valuation  : `log_price_residual`         (input context — current distance from trend)
+  - target     : `log_price_residual_target`  ← must be last (contract with loader + train)
 
     Input : config.DWD_CSV
     Output: config.DM_CSV, config.NORM_PARAMS_JSON, step3_fig_distributions.png
@@ -22,7 +22,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from ssm.config import OUTPUT, DWD_CSV, DM_CSV, NORM_PARAMS_JSON, ensure_dirs
-from ssm.splits import holdout_cutoff
 
 
 # ── feature registry ───────────────────────────────────────────────────────────
@@ -37,8 +36,9 @@ FEATURES = [
     ('dxy_ret_100',          'scale_10'),
     ('short_percent_r',      None),
     ('long_percent_r',       None),
-    ('wr_composite',         None),
-    ('log_price_residual',   None),    # target — must be last
+    ('wr_composite',             None),
+    ('log_price_residual',       None),   # raw residual — autoregressive input context
+    ('log_price_residual_target', None),  # explicit target copy (must be last)
 ]
 
 
@@ -73,7 +73,7 @@ def build_dm() -> tuple[pd.DataFrame, dict]:
     cols = [col for col, _ in FEATURES]
     data = dwd[cols].dropna().copy()
 
-    fit_mask = data.index < holdout_cutoff(data.index)
+    fit_mask = pd.Series(True, index=data.index)
 
     norm_params = {}
     for col, transform in FEATURES:

@@ -1,16 +1,14 @@
 """Stage 4 — model training.
 
-Trains MambaSSM to directly predict log_price_residual at t+1.
+Trains MambaSSM to predict the residual sequence t+1 … t+predict_window.
 
-Input : 9 single-day snapshots at SLICE_OFFSETS days before anchor t.
-Target: residual[t+1]
+Input : distinct historical windows anchored at WINDOW_ANCHORS, each WINDOW_LEN days long.
+Target: residual[t+1 … t+predict_window]
 Loss  : MSE
 
     Input : config.DM_CSV
     Output: config.CHECKPOINT, config.TRAIN_META_JSON
 """
-
-import json
 
 import pandas as pd
 import torch
@@ -20,73 +18,46 @@ from tqdm import tqdm
 
 from ssm.config import (
     DM_CSV, CHECKPOINT, TRAIN_META_JSON,
-    TEST_DAYS, SLICE_OFFSETS, PREDICT_WINDOW,
-    EPOCHS, PATIENCE, LR, BATCH_SIZE, VAL_SPLIT, VAL_SEED, WEIGHT_DECAY,
-    D_MODEL, N_LAYER, DROPOUT,
+    WINDOW_ANCHORS, WINDOW_LEN, PREDICT_WINDOW,
+    EPOCHS, PATIENCE, LR, BATCH_SIZE, TARGET_VAL_LOSS, VAL_SPLIT, VAL_SEED, WEIGHT_DECAY,
+    D_MODEL, N_LAYER, D_STATE, DROPOUT,
     ensure_dirs,
 )
-from ssm.splits import holdout_cutoff
+from ssm.artifacts import load_existing_best, save_checkpoint, write_train_meta
 from ssm.data.loader import create_dataloader
 from ssm.arch.mamba import create_model
-
-
-def build_meta(test_boundary, test_days, best_epoch, best_val_loss):
-    return {
-        'test_boundary':  test_boundary.strftime('%Y-%m-%d'),
-        'test_days':      test_days,
-        'slice_offsets':  SLICE_OFFSETS,
-        'predict_window': PREDICT_WINDOW,
-        'd_model':        D_MODEL,
-        'n_layer':        N_LAYER,
-        'dropout':        DROPOUT,
-        'best_epoch':     best_epoch,
-        'best_val_loss':  best_val_loss,
-        'run_config': {
-            'epochs':       EPOCHS,
-            'patience':     PATIENCE,
-            'lr':           LR,
-            'batch_size':   BATCH_SIZE,
-            'val_split':    VAL_SPLIT,
-            'weight_decay': WEIGHT_DECAY,
-        },
-    }
-
-
-def write_meta(test_boundary, test_days, best_epoch, best_val_loss):
-    with open(TRAIN_META_JSON, 'w') as f:
-        json.dump(build_meta(test_boundary, test_days, best_epoch, best_val_loss), f, indent=2)
 
 
 def train():
     ensure_dirs()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device: {device}')
-    print(f'Task  : predict residual[t+1]  slices={SLICE_OFFSETS}\n')
+    print(f'Task  : predict residual[t+1…t+{PREDICT_WINDOW}]  windows={WINDOW_ANCHORS}×{WINDOW_LEN}\n')
 
-    full_data  = pd.read_csv(DM_CSV, index_col='Date', parse_dates=True)
-    cutoff     = holdout_cutoff(full_data.index)
-    train_data = full_data[full_data.index < cutoff]
-    test_boundary = full_data.index[len(train_data)]
-    test_days     = len(full_data) - len(train_data)
+    data = pd.read_csv(DM_CSV, index_col='Date', parse_dates=True)
 
-    print(f'Full data       : {full_data.index[0].date()} → {full_data.index[-1].date()}  ({len(full_data)} rows)')
-    print(f'Train + val     : {train_data.index[0].date()} → {train_data.index[-1].date()}  ({len(train_data)} rows)')
-    print(f'Test (held-out) : {test_boundary.date()} → {full_data.index[-1].date()}  ({test_days} rows)\n')
+    print(f'Full data       : {data.index[0].date()} → {data.index[-1].date()}  ({len(data)} rows)')
+    split_label = 'chronological' if VAL_SEED is None else f'random (seed={VAL_SEED})'
+    print(f'Val split       : {split_label} {1 - VAL_SPLIT:.0%}/{VAL_SPLIT:.0%} on full DM dataset\n')
 
-    write_meta(test_boundary, test_days, best_epoch=0, best_val_loss=float('inf'))
-
+    # Chronological 90/10 train/val split across the full DM dataset.
     train_loader, val_loader = create_dataloader(
-        train_data, SLICE_OFFSETS, PREDICT_WINDOW, device,
+        data, WINDOW_ANCHORS, WINDOW_LEN, PREDICT_WINDOW, device,
         val_split=VAL_SPLIT, batch_size=BATCH_SIZE, random_seed=VAL_SEED,
     )
 
-    model     = create_model(train_data, PREDICT_WINDOW, device, d_model=D_MODEL, n_layer=N_LAYER, dropout=DROPOUT)
+    model     = create_model(data, PREDICT_WINDOW, device, n_windows=len(WINDOW_ANCHORS),
+                             d_model=D_MODEL, n_layer=N_LAYER, d_state=D_STATE, dropout=DROPOUT)
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=50, T_mult=2)
 
-    best_val_loss    = float('inf')
+    best_val_loss, best_epoch, best_source = load_existing_best(TRAIN_META_JSON, CHECKPOINT, data)
     patience_counter = 0
-    best_epoch       = 0
+
+    if best_source:
+        print(f'Resuming best    : {best_val_loss:.6f}  (epoch {best_epoch}, from {best_source})')
+    else:
+        print('Resuming best    : none found; starting fresh')
 
     pbar = tqdm(range(1, EPOCHS + 1), desc='Training', unit='epoch')
     for epoch in pbar:
@@ -124,15 +95,18 @@ def train():
             best_val_loss    = avg_val
             best_epoch       = epoch
             patience_counter = 0
-            torch.save(model.state_dict(), CHECKPOINT)
-            write_meta(test_boundary, test_days, best_epoch, best_val_loss)
+            save_checkpoint(CHECKPOINT, model, best_epoch, best_val_loss)
+            write_train_meta(TRAIN_META_JSON, data, best_epoch, best_val_loss)
+            if best_val_loss <= TARGET_VAL_LOSS:
+                tqdm.write(f'\nReached target val loss {TARGET_VAL_LOSS:.6f} at epoch {epoch}.')
+                break
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 tqdm.write(f'\nEarly stopping at epoch {epoch}.')
                 break
 
-    write_meta(test_boundary, test_days, best_epoch, best_val_loss)
+    write_train_meta(TRAIN_META_JSON, data, best_epoch, best_val_loss)
     print(f'\nBest val loss : {best_val_loss:.6f}  (epoch {best_epoch})')
     print(f'Checkpoint    → {CHECKPOINT}')
 

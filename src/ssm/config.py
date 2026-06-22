@@ -16,7 +16,7 @@ Pipeline data flow (each stage reads the previous stage's artifacts)::
     step_2_feature_engineering ──▶  DWD_CSV, TREND_PARAMS_JSON (reads ODS_CSV)
     step_3_dm                  ──▶  DM_CSV, NORM_PARAMS_JSON   (reads DWD_CSV)
     step_4_train               ──▶  CHECKPOINT, TRAIN_META_JSON (reads DM_CSV)
-    step_5_evaluate            ──▶  figures + metrics                 (reads all of the above)
+    step_5_evaluate            ──▶  future-rollout figures + csv      (reads all of the above)
 """
 
 from pathlib import Path
@@ -38,14 +38,17 @@ NORM_PARAMS_JSON  = OUTPUT / "norm_params.json"
 CHECKPOINT        = CHECKPOINT_DIR / "MambaSSM_best.pt"
 TRAIN_META_JSON   = OUTPUT / "train_meta.json"
 
-# ── windowing contract shared by train + evaluate ────────────────────────────
-TEST_DAYS      = 365   # last year of data held out completely
+# ── windowing / forecast contract shared by train + evaluate ─────────────────
+FORECAST_DAYS  = 365   # synthetic future rollout horizon after the last observed date
 
-# Each slice is a single-day snapshot at this many days before the anchor t.
-# Ordered oldest → newest; offset=0 is today (the anchor itself).
-SLICE_OFFSETS  = [365, 180, 90, 75, 65, 55, 30]
+# Sequential look-back windows: each anchor below becomes a WINDOW_LEN-day *consecutive*
+# window (days [a .. a+WINDOW_LEN-1] before t). Windows are kept DISTINCT — the model
+# encodes each window's short sequence with a SHARED Mamba and concatenates the per-window
+# embeddings, so the calendar gaps between windows never enter a shared recurrence.
+WINDOW_ANCHORS = [365, 180, 90, 75, 60, 45, 30]   # nearest day of each window
+WINDOW_LEN     = 7
 
-PREDICT_WINDOW = 1     # days ahead to predict (t+1 residual)
+PREDICT_WINDOW = 7     # predict the residual sequence t+1 … t+7 jointly
 
 # ── domain constants ─────────────────────────────────────────────────────────
 # All known + estimated future halvings. Used by step_2 (historical features)
@@ -64,14 +67,16 @@ EPOCHS       = 1000
 PATIENCE     = 1000
 LR           = 3e-4
 BATCH_SIZE   = 32
-VAL_SPLIT    = 0.15
-VAL_SEED     = 42     # random seed for val split; windows are not sequential so random is fine
+VAL_SPLIT    = 0.10   # approx. 370 target days out of the current full window set
+VAL_SEED     = 42     # fixed random split over the full DM dataset
+TARGET_VAL_LOSS = 0.015
 WEIGHT_DECAY = 1e-3
 
 # ── model hyperparameters ────────────────────────────────────────────────────
-D_MODEL = 32
-N_LAYER = 3
-DROPOUT = 0.1
+D_MODEL  = 32
+N_LAYER  = 3
+D_STATE  = 16
+DROPOUT  = 0.1
 
 
 def ensure_dirs() -> None:

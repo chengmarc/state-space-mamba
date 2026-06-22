@@ -5,7 +5,8 @@ import pandas as pd
 
 from ssm.data.loader import build_windows, train_val_split
 
-SLICE_OFFSETS  = [365, 180, 90, 75, 55, 20, 10, 5, 0]
+WINDOW_ANCHORS = [180, 90, 45, 20, 5]
+WINDOW_LEN     = 7
 PREDICT_WINDOW = 1
 
 
@@ -19,25 +20,26 @@ def _ramp_frame(n):
 def test_build_windows_shapes():
     n   = 500
     df  = _ramp_frame(n)
-    X, y = build_windows(df, SLICE_OFFSETS, PREDICT_WINDOW)
-    max_offset = max(SLICE_OFFSETS)
+    X, y = build_windows(df, WINDOW_ANCHORS, WINDOW_LEN, PREDICT_WINDOW)
+    max_offset = max(WINDOW_ANCHORS) + WINDOW_LEN - 1
     expected_windows = n - max_offset - PREDICT_WINDOW
-    assert X.shape == (expected_windows, len(SLICE_OFFSETS), 2)
-    assert y.shape == (expected_windows, 1)
+    # last column is the target, excluded from inputs → n_features = n_cols - 1
+    assert X.shape == (expected_windows, len(WINDOW_ANCHORS), WINDOW_LEN, len(df.columns) - 1)
+    assert y.shape == (expected_windows, 1, PREDICT_WINDOW, 1)
 
 
 def test_target_is_correct_row():
     """y[i, 0] must equal the last-column value at anchor+1."""
     df   = _ramp_frame(500)
-    X, y = build_windows(df, SLICE_OFFSETS, PREDICT_WINDOW)
-    max_offset = max(SLICE_OFFSETS)
+    X, y = build_windows(df, WINDOW_ANCHORS, WINDOW_LEN, PREDICT_WINDOW)
+    max_offset = max(WINDOW_ANCHORS) + WINDOW_LEN - 1
     for i in range(min(10, len(y))):
         t = max_offset + i
-        assert float(y[i, 0]) == df.iloc[t + 1, -1]
+        assert float(y[i, 0, 0, 0]) == df.iloc[t + 1, -1]
 
 
 def test_embargo_purges_train_val_target_overlap():
-    X, y = build_windows(_ramp_frame(600), SLICE_OFFSETS, PREDICT_WINDOW)
+    X, y = build_windows(_ramp_frame(600), WINDOW_ANCHORS, WINDOW_LEN, PREDICT_WINDOW)
     (_, ytr), (_, yv) = train_val_split(X, y, val_split=0.2, embargo=PREDICT_WINDOW)
     train_indices = set(ytr.astype(int).ravel())
     val_indices   = set(yv.astype(int).ravel())
@@ -46,7 +48,7 @@ def test_embargo_purges_train_val_target_overlap():
 
 
 def test_embargo_drops_exactly_embargo_windows():
-    X, y = build_windows(_ramp_frame(600), SLICE_OFFSETS, PREDICT_WINDOW)
+    X, y = build_windows(_ramp_frame(600), WINDOW_ANCHORS, WINDOW_LEN, PREDICT_WINDOW)
     embargo = PREDICT_WINDOW
     (Xtr, _), (Xv, _) = train_val_split(X, y, val_split=0.2, embargo=embargo)
     assert len(Xtr) + embargo + len(Xv) == len(X)

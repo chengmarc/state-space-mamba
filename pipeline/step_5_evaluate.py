@@ -1,13 +1,15 @@
-"""Stage 5 — autoregressive evaluation on the held-out test window.
+"""Stage 5 — synthetic future rollout beyond the observed data window.
 
-Rolls the model forward day by day through the 365-day test window.  All
-feature columns use real observed data; only log_price_residual is updated
-with model predictions at each step (autoregressive on the residual, real on
-everything else).
+The model is trained on the full observed DM dataset with a random train/val split.
+Stage 5 then rolls forward for ``FORECAST_DAYS`` beyond the final observed date:
+
+    - ``years_since_halving`` is computed deterministically
+    - six exogenous inputs are projected by separate cycle-aligned linear regressions
+    - ``log_price_residual`` is forecast autoregressively and fed back as input
 
     Input : config.DM_CSV, config.TRAIN_META_JSON, config.CHECKPOINT,
             config.TREND_PARAMS_JSON
-    Output: step5_fig_evaluation.png, step5_rollout.csv + printed metrics
+    Output: step5_fig_evaluation.png, step5_rollout.csv
 """
 
 import json
@@ -17,16 +19,40 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import torch
 
-from ssm.config import OUTPUT, DM_CSV, TRAIN_META_JSON, TREND_PARAMS_JSON, CHECKPOINT
+from ssm.config import (
+    OUTPUT, DM_CSV, TRAIN_META_JSON, TREND_PARAMS_JSON, CHECKPOINT,
+    FORECAST_DAYS, HALVING_DATES,
+)
 from ssm.arch.mamba import create_model
+from ssm.artifacts import load_checkpoint_state, load_train_meta
 
+INPUT_FEATURE_COLUMNS = [
+    'years_since_halving',
+    'realized_vol_30',
+    'dxy_ret_30',
+    'dxy_ret_100',
+    'short_percent_r',
+    'long_percent_r',
+    'wr_composite',
+    'log_price_residual',
+]
+PROJECTED_FEATURE_COLUMNS = [
+    'realized_vol_30',
+    'dxy_ret_30',
+    'dxy_ret_100',
+    'short_percent_r',
+    'long_percent_r',
+    'wr_composite',
+]
+TARGET_COLUMN = 'log_price_residual_target'
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+DEEP_BLUE = 'steelblue'
+PALE_BLUE = 'lightsteelblue'
+
 
 def load_artifacts():
     data = pd.read_csv(DM_CSV, index_col='Date', parse_dates=True)
-    with open(TRAIN_META_JSON) as f:
-        meta = json.load(f)
+    meta = load_train_meta(TRAIN_META_JSON)
     return data, meta
 
 
@@ -42,108 +68,124 @@ def require_meta(meta, *keys):
     return [meta[k] for k in keys]
 
 
-# ── rollout ───────────────────────────────────────────────────────────────────
+def cycle_info(index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Return cycle id and day-since-halving for each date."""
+    rows = []
+    for dt in pd.to_datetime(index):
+        eligible = HALVING_DATES[HALVING_DATES <= dt]
+        if len(eligible):
+            last_halving = eligible.max()
+            cycle_id = int(np.where(HALVING_DATES == last_halving)[0][-1])
+        else:
+            last_halving = HALVING_DATES.min()
+            cycle_id = 0
+        rows.append({
+            'date': dt,
+            'cycle_id': cycle_id,
+            'cycle_day': int((dt - last_halving).days),
+            'years_since_halving': max(0.0, (dt - last_halving).days / 365.25),
+        })
+    return pd.DataFrame(rows).set_index('date')
 
-def autoregressive_rollout(model, data: pd.DataFrame, meta: dict, device) -> pd.DataFrame:
-    """Roll forward through the held-out test window.
 
-    All feature columns use real observed data except log_price_residual,
-    which is replaced by the model's prediction at each step.
-    """
-    slice_offsets, test_boundary = require_meta(meta, 'slice_offsets', 'test_boundary')
-    test_boundary  = pd.Timestamp(test_boundary)
-    max_offset     = max(slice_offsets)
-    residual_col   = data.columns.get_loc('log_price_residual')
-    test_start_idx = data.index.searchsorted(test_boundary)
+def project_feature_by_cycle_day(history: pd.DataFrame, future_info: pd.DataFrame, column: str) -> pd.Series:
+    """Project one exogenous feature using separate cycle-aligned regressions per future day."""
+    history_info = cycle_info(history.index)
+    joined = history_info.join(history[[column]], how='inner').dropna()
 
-    synthetic = data.copy()
-    records   = []
+    preds = []
+    for dt, row in future_info.iterrows():
+        candidates = joined[(joined['cycle_day'] == row['cycle_day']) & (joined['cycle_id'] < row['cycle_id'])]
+        if candidates.empty:
+            nearest = joined.assign(day_gap=(joined['cycle_day'] - row['cycle_day']).abs())
+            candidates = nearest.sort_values(['day_gap', 'cycle_id']).groupby('cycle_id', as_index=False).head(1)
 
+        x = candidates['cycle_id'].to_numpy(dtype=float)
+        y = candidates[column].to_numpy(dtype=float)
+        target_cycle = float(row['cycle_id'])
+
+        if len(y) == 0:
+            pred = float(history[column].dropna().iloc[-1])
+        elif len(y) == 1 or np.allclose(x, x[0]):
+            pred = float(y[-1])
+        else:
+            slope, intercept = np.polyfit(x, y, deg=1)
+            pred = float(slope * target_cycle + intercept)
+        preds.append(pred)
+
+    return pd.Series(preds, index=future_info.index, name=column)
+
+
+def project_future_inputs(history: pd.DataFrame, forecast_days: int) -> pd.DataFrame:
+    """Build synthetic future exogenous inputs before residual autoregression."""
+    future_index = pd.date_range(history.index[-1] + pd.Timedelta(days=1), periods=forecast_days, freq='D')
+    future_info = cycle_info(future_index)
+    future = pd.DataFrame(index=future_index, columns=INPUT_FEATURE_COLUMNS, dtype=float)
+    future['years_since_halving'] = future_info['years_since_halving']
+
+    for column in PROJECTED_FEATURE_COLUMNS:
+        future[column] = project_feature_by_cycle_day(history, future_info, column)
+
+    future['log_price_residual'] = np.nan
+    return future
+
+
+def autoregressive_rollout(model, history: pd.DataFrame, meta: dict, device, forecast_days: int) -> pd.DataFrame:
+    """Roll the model forward day by day beyond the observed history."""
+    window_anchors, window_len = require_meta(meta, 'window_anchors', 'window_len')
+
+    history_inputs = history[INPUT_FEATURE_COLUMNS].copy()
+    future_inputs = project_future_inputs(history_inputs, forecast_days)
+    working_inputs = pd.concat([history_inputs, future_inputs])
+
+    predictions = []
     model.eval()
     with torch.no_grad():
-        for origin_idx in range(test_start_idx, len(data) - 1):
-            if origin_idx - max_offset < 0:
-                continue
-            slices = [synthetic.iloc[origin_idx - off].values for off in slice_offsets]
-            x      = torch.tensor(np.array(slices, dtype=np.float32)).unsqueeze(0).to(device)
-            pred   = float(model(x).squeeze().cpu())
+        for forecast_date in future_inputs.index:
+            origin_idx = working_inputs.index.get_loc(forecast_date) - 1
+            windows = [[working_inputs.iloc[origin_idx - a - d].values for d in range(window_len - 1, -1, -1)]
+                       for a in window_anchors]
+            x = torch.tensor(np.array([windows], dtype=np.float32)).to(device)
+            pred = float(model(x).reshape(-1)[0].cpu())
+            working_inputs.loc[forecast_date, 'log_price_residual'] = pred
 
-            next_idx = origin_idx + 1
-            actual   = float(data.iloc[next_idx, residual_col])
-            synthetic.iloc[next_idx, residual_col] = pred
+            record = {'date': forecast_date, 'predicted_residual': pred}
+            for column in INPUT_FEATURE_COLUMNS:
+                record[column] = float(working_inputs.loc[forecast_date, column])
+            predictions.append(record)
 
-            records.append({
-                'date':      data.index[next_idx],
-                'predicted': pred,
-                'actual':    actual,
-                'step':      origin_idx - test_start_idx + 1,
-            })
-
-    return pd.DataFrame(records).set_index('date')
+    return pd.DataFrame(predictions).set_index('date')
 
 
-# ── metrics ───────────────────────────────────────────────────────────────────
-
-def compute_metrics(results: pd.DataFrame, slice_offsets: list[int]):
-    actual    = results['actual'].values
-    predicted = results['predicted'].values
-    mae       = np.mean(np.abs(predicted - actual))
-    model_mse = ((predicted - actual) ** 2).mean()
-
-    anchor  = results['actual'].shift(1).values
-    dir_acc = np.mean(
-        np.sign(predicted[1:] - anchor[1:]) == np.sign(actual[1:] - anchor[1:])
-    ) * 100
-
-    copy_lag = min(slice_offsets)
-    copy_mse = ((actual[copy_lag:] - actual[:-copy_lag]) ** 2).mean()
-
-    print(f'\n{"─"*55}')
-    print(f'  Test window    : {len(results)} days')
-    print(f'{"─"*55}')
-    print(f'  MAE            : {mae:.4f}')
-    print(f'  Directional acc: {dir_acc:.1f}%')
-    print(f'  Copy-lag-{copy_lag} MSE : {copy_mse:.4f}  (naive baseline)')
-    print(f'  Model MSE      : {model_mse:.4f}')
-    print(f'{"─"*55}\n')
-
-
-# ── price reconstruction ─────────────────────────────────────────────────────
-
-def reconstruct_prices(results: pd.DataFrame, trend_params: dict) -> pd.DataFrame:
-    a, b, c  = trend_params['a'], trend_params['b'], trend_params['c']
+def reconstruct_prices(index: pd.DatetimeIndex, residuals: np.ndarray, trend_params: dict) -> np.ndarray:
+    a, b, c = trend_params['a'], trend_params['b'], trend_params['c']
     ref_date = pd.Timestamp(trend_params['ref_date'])
-
-    X     = (results.index - ref_date).days.to_numpy(dtype=float)
-    trend = a * np.log(X + c) + b
-
-    out = results.copy()
-    out['actual_price']    = np.exp(out['actual'].values    + trend)
-    out['predicted_price'] = np.exp(out['predicted'].values + trend)
-    return out
+    x_days = (index - ref_date).days.to_numpy(dtype=float)
+    trend = a * np.log(x_days + c) + b
+    return np.exp(residuals + trend)
 
 
-# ── plot ──────────────────────────────────────────────────────────────────────
-
-def plot_evaluation(results: pd.DataFrame):
-    dates           = results.index
-    actual          = results['actual'].values
-    predicted       = results['predicted'].values
-    actual_price    = results['actual_price'].values
-    predicted_price = results['predicted_price'].values
+def plot_evaluation(history: pd.DataFrame, forecast: pd.DataFrame, trend_params: dict) -> None:
+    context_days = min(180, len(history))
+    history_tail = history.iloc[-context_days:].copy()
+    history_tail['actual_price'] = reconstruct_prices(
+        history_tail.index, history_tail['log_price_residual'].to_numpy(dtype=float), trend_params
+    )
 
     fig, (ax_res, ax_px) = plt.subplots(2, 1, figsize=(14, 9), sharex=True)
-    fig.suptitle('Autoregressive rollout — 365-day test window', fontsize=13)
+    fig.suptitle('Synthetic future rollout — projected exogenous inputs + autoregressive residual', fontsize=13)
 
-    ax_res.plot(dates, actual,    color='steelblue', linewidth=1.2, label='actual')
-    ax_res.plot(dates, predicted, color='tomato',    linewidth=1.0, linestyle='--', label='predicted')
+    ax_res.plot(history_tail.index, history_tail['log_price_residual'], color=DEEP_BLUE, linewidth=1.0, label='history')
+    ax_res.plot(forecast.index, forecast['predicted_residual'], color='tomato', linewidth=1.1, linestyle='--',
+                label='forecast')
     ax_res.axhline(0, color='grey', linewidth=0.5, linestyle=':')
     ax_res.set_ylabel('log-price residual')
     ax_res.legend(fontsize=9)
     ax_res.grid(linestyle=':', linewidth=0.5)
 
-    ax_px.plot(dates, actual_price,    color='steelblue', linewidth=1.4, label='actual price')
-    ax_px.plot(dates, predicted_price, color='tomato',    linewidth=1.0, linestyle='--', label='predicted price')
+    ax_px.plot(history_tail.index, history_tail['actual_price'], color=PALE_BLUE, linewidth=1.4, label='history price')
+    ax_px.plot(forecast.index, forecast['predicted_price'], color='tomato', linewidth=1.1, linestyle='--',
+               label='forecast price')
     ax_px.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f'${x:,.0f}'))
     ax_px.set_ylabel('BTC price (USD)')
     ax_px.set_xlabel('date')
@@ -157,40 +199,38 @@ def plot_evaluation(results: pd.DataFrame):
     print(f'Saved → {path.name}')
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
-
 def evaluate():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'Device: {device}\n')
 
     data, meta = load_artifacts()
-    slice_offsets, predict_window, test_boundary, d_model, n_layer, dropout = require_meta(
-        meta, 'slice_offsets', 'predict_window', 'test_boundary', 'd_model', 'n_layer', 'dropout'
+    window_anchors, window_len, predict_window, d_model, n_layer, d_state, dropout = require_meta(
+        meta, 'window_anchors', 'window_len', 'predict_window', 'd_model', 'n_layer', 'd_state', 'dropout'
     )
-    test_boundary = pd.Timestamp(test_boundary)
 
-    model = create_model(data, predict_window, device, d_model=d_model, n_layer=n_layer, dropout=dropout)
-    model.load_state_dict(torch.load(CHECKPOINT, weights_only=True, map_location=device))
+    model = create_model(data, predict_window, device, n_windows=len(window_anchors),
+                         d_model=d_model, n_layer=n_layer, d_state=d_state, dropout=dropout)
+    model.load_state_dict(load_checkpoint_state(CHECKPOINT, device))
     model.eval()
 
-    print(f'Test boundary : {test_boundary.date()}')
-    print(f'Data end      : {data.index[-1].date()}')
-    print(f'Slices        : {slice_offsets}')
-    print('Running autoregressive rollout...')
+    print(f'Data end       : {data.index[-1].date()}')
+    print(f'Forecast days  : {FORECAST_DAYS}')
+    print(f'Windows        : {window_anchors}×{window_len}')
+    print('Running synthetic future rollout (projected exogenous inputs + autoregressive residual)...')
 
-    results = autoregressive_rollout(model, data, meta, device)
-    if results.empty:
+    forecast = autoregressive_rollout(model, data, meta, device, FORECAST_DAYS)
+    if forecast.empty:
         print('No predictions.')
         return
 
-    compute_metrics(results, slice_offsets)
-
     trend_params = load_trend_params()
-    results      = reconstruct_prices(results, trend_params)
-    plot_evaluation(results)
+    forecast['predicted_price'] = reconstruct_prices(
+        forecast.index, forecast['predicted_residual'].to_numpy(dtype=float), trend_params
+    )
+    plot_evaluation(data, forecast, trend_params)
 
     csv_path = OUTPUT / 'step5_rollout.csv'
-    results.to_csv(csv_path, float_format='%.6f')
+    forecast.to_csv(csv_path, float_format='%.6f')
     print(f'Saved → {csv_path.name}')
 
 

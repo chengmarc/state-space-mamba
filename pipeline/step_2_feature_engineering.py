@@ -4,14 +4,13 @@ Reads the ODS and builds the feature warehouse (DWD).  Only features with
 empirically validated win-rate signal (proved in winrate-matrix) are computed:
 
   - price decomposition : log price, fitted log trend, residual
-  - valuation           : MVRV ratio
   - volatility          : 30-day realized vol
   - cycle               : years since halving
   - macro               : DXY 30-day and 100-day returns
   - technical           : Williams %R (short + long), oversold composite
 
 Also persists the fitted price-trend parameters so stage 5 can reconstruct
-absolute prices from residual forecasts.
+absolute prices from future residual forecasts.
 
     Input : config.ODS_CSV
     Output: config.DWD_CSV, config.TREND_PARAMS_JSON, step2_fig*.png
@@ -25,7 +24,6 @@ import matplotlib.pyplot as plt
 from scipy.optimize import curve_fit
 
 from ssm.config import OUTPUT, ODS_CSV, DWD_CSV, TREND_PARAMS_JSON, HALVING_DATES, ensure_dirs
-from ssm.splits import holdout_cutoff
 
 
 # ── config ─────────────────────────────────────────────────────────────────────
@@ -45,10 +43,10 @@ def _log_curve(x, a, b, c):
     return a * np.log(x + c) + b
 
 
-def fit_log_trend(series: pd.Series, fit_until: pd.Timestamp | None = None):
-    """Expanding-window log trend with no future data leakage.
+def fit_log_trend(series: pd.Series):
+    """Expanding-window log trend fit on the full observed history.
 
-    Step 1 — estimate c once on training rows using nonlinear curve_fit.
+    Step 1 — estimate c once on the observed rows using nonlinear curve_fit.
     Step 2 — fix c and compute a_t, b_t at every row via cumulative OLS,
               so residual[t] only uses data available up to t.
 
@@ -56,8 +54,6 @@ def fit_log_trend(series: pd.Series, fit_until: pd.Timestamp | None = None):
     the parameters at the last row (used by step 5 for future extrapolation).
     """
     valid = series.dropna()
-    if fit_until is not None:
-        valid = valid[valid.index < fit_until]
     X_fit = (valid.index - series.index[0]).days.to_numpy(dtype=float)
     Y_fit = valid.to_numpy(dtype=float)
     (_, _, c), _ = curve_fit(_log_curve, X_fit, Y_fit, p0=[1.0, 1.0, 1.0])
@@ -129,30 +125,32 @@ def build_dwd() -> tuple[pd.DataFrame, pd.DataFrame]:
     raw = pd.read_csv(ODS_CSV, index_col='Date', parse_dates=True)
     dwh = pd.DataFrame(index=raw.index)
 
-    cutoff = holdout_cutoff(raw.index)
-    print(f'Trend fit cutoff (test held out from): {cutoff.date()}')
-
     # ── price: log + log trend + residual ──────────────────────────────────────
 
-    log_price = np.log(raw['price_usd'])
-    price_trend, a, b, c = fit_log_trend(log_price, fit_until=cutoff)
+    # Price basis is the yfinance OHLC close (same provider as the Williams %R features
+    # and the direction label). To anchor the trend on a longer history, the pre-2014
+    # gap (yfinance BTC-USD starts ~Sep 2014) is backfilled with CoinMetrics price_usd —
+    # close takes priority wherever it exists, so the modelled DM window is pure close and
+    # price_usd only extends the early trend fit. The ~0.3% splice artifact at the join
+    # lands in warmup rows dropped before the DM window; the label stays strictly close.
+    price = raw['close'].combine_first(raw['price_usd'])
+    log_price = np.log(price)
+    price_trend, a, b, c = fit_log_trend(log_price)
     ref_date = raw.index[0].strftime('%Y-%m-%d')
 
-    dwh['log_price_usd']      = log_price
-    dwh['log_price_trend']    = price_trend
-    dwh['log_price_residual'] = log_price - price_trend
+    dwh['log_price_usd']         = log_price
+    dwh['log_price_trend']       = price_trend
+    dwh['log_price_residual']    = log_price - price_trend
+    dwh['log_price_residual_target'] = dwh['log_price_residual']   # explicit target copy — last column by contract
+    dwh['close']                 = raw['close']   # raw OHLC close — retained for plotting/context
 
     with open(TREND_PARAMS_JSON, 'w') as f:
         json.dump({'a': a, 'b': b, 'c': c, 'ref_date': ref_date}, f, indent=2)
     print(f'Trend params: a={a:.4f}  b={b:.4f}  c={c:.4f}  ref={ref_date}')
 
-    # ── valuation ──────────────────────────────────────────────────────────────
-
-    dwh['mvrv'] = raw['mvrv']
-
     # ── volatility ─────────────────────────────────────────────────────────────
 
-    log_returns = np.log(raw['price_usd'] / raw['price_usd'].shift(1))
+    log_returns = np.log(price / price.shift(1))
     dwh['realized_vol_30'] = (
         log_returns.rolling(REALIZED_VOL_WINDOW).std() * np.sqrt(TRADING_DAYS) * 100
     )
@@ -184,7 +182,7 @@ def plot_price(dwh: pd.DataFrame, raw: pd.DataFrame) -> None:
     fig, axes = plt.subplots(3, 1, figsize=(14, 12), sharex=True)
     fig.suptitle('BTC Price Decomposition', fontsize=14)
 
-    axes[0].plot(raw.index, raw['price_usd'], color='steelblue', linewidth=0.8)
+    axes[0].plot(raw.index, raw['close'], color='steelblue', linewidth=0.8)
     axes[0].set_yscale('log')
     axes[0].set_title('Close Price USD (log scale)')
     axes[0].grid(linestyle=':')
@@ -195,9 +193,10 @@ def plot_price(dwh: pd.DataFrame, raw: pd.DataFrame) -> None:
     axes[1].legend(fontsize=9)
     axes[1].grid(linestyle=':')
 
-    axes[2].plot(dwh.index, dwh['log_price_residual'], color='green', linewidth=0.8)
+    axes[2].plot(dwh.index, dwh['log_price_residual'], color='darkgreen', linewidth=1.0, label='residual')
     axes[2].axhline(0, color='black', linestyle=':', linewidth=0.6)
-    axes[2].set_title('Log Price Residual — Forecast Target')
+    axes[2].set_title('Log Price Residual')
+    axes[2].legend(fontsize=9)
     axes[2].grid(linestyle=':')
 
     plt.tight_layout()

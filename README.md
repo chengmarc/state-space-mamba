@@ -10,17 +10,15 @@
 
 ## Abstract
 
-This project implements a time series forecasting pipeline using multi-feature inputs and a **selective state-space model (MambaSSM)**. The central challenge is the **naive lag-1 baseline**: a model that learns to output $\hat{Y}_{t+1} \approx Y_t$ achieves deceptively low error on trending series while carrying no genuine predictive signal.
+A MambaSSM pipeline for multi-feature BTC log-price residual forecasting. The model is a **multi-horizon, sparse-window forecaster**: for each anchor date $t$, it sees seven distinct 7-day windows from the past and predicts the residual sequence $t+1 \dots t+7$.
 
-The pipeline breaks lag-1 degeneracy at three levels:
+The design tries to break trivial lag-copy behaviour at three levels:
 
 - **Detrending** — a logarithmic trend is fitted and removed, eliminating the smooth autocorrelation that makes lag-copying cheap to learn
-- **Multi-feature inputs** — on-chain, macro, and cycle signals impose orthogonal constraints that a univariate copier cannot satisfy
-- **Architectural selectivity** — MambaSSM's input-dependent gating discourages trivial state propagation across timesteps
+- **Window isolation** — each historical window is encoded independently, so long calendar gaps never become one shared recurrence the model can simply copy through
+- **Explicit autoregression** — the raw residual is both an input feature and the prediction target, making compounding forecast error visible instead of hidden behind smoothing
 
-The trained model achieved a best val_loss of **0.001213 at epoch 863**, beating the copy-lag-1 MSE baseline of 0.001312. This is a significant result: **the model predicts tomorrow's residual more accurately than "copy today's value" — despite never seeing any price data from the last 30 days.** Rather than exploiting short-term autocorrelation, the model has learned genuine structure from cycle position, volatility regime, and macro context alone.
-
-A range of recurrent and attention architectures (SegRNN, LSTM, Seq2Seq LSTM, Attention LSTM, Transformer) were explored and are summarised under [Prior Work](#6-prior-work); the maintained codebase focuses on MambaSSM, which gave the best performance and strongest resistance to lag-1 degeneracy.
+Two experiments were conducted against a **lag-1 persistence baseline** (predict next residual = current residual, next-day MSE **0.001215** on the random val set). On a random 90/10 split the model achieves next-day MSE **0.001212**, narrowly beating lag-1; on a strict chronological 90/10 split reserving approximately one year as a hold-out, the model does not reliably outperform lag-1. The `val_loss ≤ 0.015` hard stop in the production training run is derived from the chronological experiment. This codebase retains only the production training and forward-projection pipeline; the evaluation scripts are not checked in.
 
 ---
 
@@ -33,8 +31,8 @@ The underlying price trend is approximated by a logarithmic function:
 $$Y_t = a + b \cdot \log(X_t + c)$$
 
 - $X_t$ — integer-encoded time index (days since data start)
-- $(a, b, c)$ — estimated via non-linear least squares on training data only
-- $c$ is fitted once globally; $a$ and $b$ are updated cumulatively at each row via expanding-window OLS, so no future data leaks into the residual
+- $(a, b, c)$ — estimated from the observed history
+- $c$ is fitted once globally; $a$ and $b$ are updated cumulatively at each row via expanding-window OLS, so residual[t] only uses data available up to t
 
 This form handles exponential-like growth while remaining numerically stable for small $X_t$. By removing the trend explicitly, the model cannot exploit slow-moving autocorrelation as a shortcut.
 
@@ -48,7 +46,7 @@ $$R_t = Y_t - \hat{Y}_t$$
 
 ### 1.3 Multi-Feature Residual Forecasting
 
-The model predicts the log-price residual at t+1 from a sparse lookback of multi-feature inputs. The feature set is assembled in [stage 3](#4-pipeline) and comprises 7 input channels plus the target:
+The model predicts the raw log-price residual sequence $t+1 \dots t+7$ from a sparse lookback of multi-feature inputs. The feature set is assembled in [stage 3](#4-pipeline) and comprises 8 input channels plus the target:
 
 | Group | Features |
 |---|---|
@@ -56,13 +54,14 @@ The model predicts the log-price residual at t+1 from a sparse lookback of multi
 | Volatility | 30-day realized volatility (z-scored) |
 | Macro | DXY 30-day return (×10), DXY 100-day return (×10) |
 | Technical | Williams %R short (21d, EMA-3), Williams %R long (112d, EMA-3), WR composite |
-| **Target** | **log-price residual** |
+| Autoregressive | current `log_price_residual` |
+| **Target** | **future `log_price_residual`** |
 
-For each anchor day $t$, the input is a set of non-contiguous snapshots at fixed offsets (currently `[365, 180, 90, 75, 65, 55, 30]` days before $t$), giving an input tensor of shape `(batch, n_slices, n_features)`. The learned mapping is:
+For each anchor day $t$, the input is a set of non-contiguous **windows** at fixed anchors (currently `[365, 180, 90, 75, 60, 45, 30]` days before $t$). Each anchor contributes a consecutive 7-day window, giving an input tensor of shape `(batch, n_windows, window_len, n_features)`. The learned mapping is:
 
-$$\left( F_{t - s_1}, \ldots, F_{t - s_k} \right) \rightarrow R_{t+1}$$
+$$\left( W_{t - a_1}, \ldots, W_{t - a_k} \right) \rightarrow \left(R_{t+1}, \ldots, R_{t+7}\right)$$
 
-where $s_1 > \ldots > s_k$ are the slice offsets. The minimum offset is **30 days** — the model has no access to recent prices, so any copy strategy is at least 30 days stale.
+where $a_1 > \ldots > a_k$ are the window anchors and each $W_{t-a}$ is a 7-day sequence. The nearest observed input day is **t-30** and the nearest window spans **t-36 … t-30**, so the model never sees the most recent 29 days of residual history directly.
 
 <div align="center"><img src="./output/step2_fig2_signals.png" width="90%"></div>
 
@@ -72,14 +71,24 @@ The three signal groups over the full data history:
 - **Middle — DXY 30-day and 100-day returns:** negative USD momentum historically anti-correlates with BTC strength. The 100-day series captures longer regime shifts that a short window would miss.
 - **Bottom — years since last halving:** positions the current date within the 4-year supply-emission cycle, distinguishing accumulation from distribution phases.
 
-### 1.4 Inverse Transformation
+### 1.4 Feature Normalization
+
+The DM dataset is assembled by selecting the validated features from the DWD and applying per-feature transforms. Three transforms are used:
+
+- **Z-score (orange)** — mean and variance fitted on the full observed dataset, applied to `realized_vol_30`
+- **×10 linear scale (green)** — fixed multiplier applied to `dxy_ret_30` and `dxy_ret_100`, whose raw values (~0.02) sit two orders of magnitude below the residual; the fixed scale preserves threshold semantics without data-dependent fitting
+- **None (blue)** — features already on a natural or bounded scale (`years_since_halving`, Williams %R signals, `log_price_residual`)
+
+<div align="center"><img src="./output/step3_fig_distributions.png" width="90%"></div>
+
+### 1.5 Inverse Transformation
 
 Final price predictions are reconstructed by adding the forecasted residuals back to the trend:
 
 $$\hat{P}_{t+k} = \exp\!\left(\hat{R}_{t+k} + \hat{Y}_{t+k}\right)$$
 
 - The trend parameters fitted in stage 2 are persisted to `trend_params.json`
-- Stage 5 loads them to extrapolate the trend forward and reconstruct USD prices for the full 4-year rollout
+- Stage 5 loads them to reconstruct USD prices over the synthetic future rollout
 
 ---
 
@@ -88,10 +97,10 @@ $$\hat{P}_{t+k} = \exp\!\left(\hat{R}_{t+k} + \hat{Y}_{t+k}\right)$$
 **MambaSSM** is a structured state-space model with selective state transitions:
 
 - **Linear-time complexity** — recurrent structure scales with sequence length, not quadratically
-- **Input-dependent gating** — the selection mechanism learns which historical context to propagate, providing architecture-level resistance to trivial lag-1 state copying
+- **Input-dependent gating** — the selection mechanism learns which intra-window context to propagate
 - **Log-domain scan** — the `logcumsumexp` selective scan kernel is numerically stable for long sequences
 
-The model maps a sparse lookback of shape `(batch, n_slices, n_features)` to a prediction of shape `(batch, predict_window)`, reading the final hidden state after processing all slices.
+The model maps a sparse lookback of shape `(batch, n_windows, window_len, n_features)` to a prediction of shape `(batch, predict_window)`. A shared Mamba encoder processes each 7-day window separately; the per-window terminal states are concatenated and projected to the 7 forecast horizons.
 
 **Mamba Block** — selective SSM with dual-branch projection, depthwise convolution, and SiLU gating ([1, 2]):
 
@@ -112,14 +121,16 @@ pipeline/
   step_2_feature_engineering.py  # ODS          -> DWD (features) + trend params
   step_3_dm.py                   # DWD          -> DM + norm params
   step_4_train.py                # DM           -> checkpoint + train metadata
-  step_5_evaluate.py             # checkpoint   -> metrics + figures
-output/                          # generated artifacts (git-ignored)
+  step_5_evaluate.py             # checkpoint   -> synthetic future rollout csv + figure
+output/                          # generated artifacts and reference outputs
 ```
 
 Configuration is split by locality:
 
-- **`src/ssm/config.py`** — everything that crosses a stage boundary: directory paths, artifact filenames, slice offsets, model and training hyperparameters
+- **`src/ssm/config.py`** — everything that crosses a stage boundary: directory paths, artifact filenames, window anchors, model and training hyperparameters
 - **Stage-local config** — the feature registry in stage 3 and the oscillator tables in stage 2 stay in their own files; they are not shared across stages
+
+Most heavy intermediates in `output/` are regenerated locally; selected derived artifacts such as figures, the checkpoint, and metadata may be checked in for reference.
 
 ### Setup
 
@@ -141,15 +152,7 @@ Each stage reads the previous stage's artifacts from `output/` and writes its ow
 | 2 — Features | `pipeline/step_2_feature_engineering.py` | `step1_ods.csv` | `step2_dwd.csv`, `trend_params.json`, figures |
 | 3 — DM | `pipeline/step_3_dm.py` | `step2_dwd.csv` | `step3_dm.csv`, `norm_params.json`, figure |
 | 4 — Train | `pipeline/step_4_train.py` | `step3_dm.csv` | `checkpoints/MambaSSM_best.pt`, `train_meta.json` |
-| 5 — Evaluate | `pipeline/step_5_evaluate.py` | all of the above | metrics + figures |
-
-<div align="center"><img src="./output/step3_fig_distributions.png" width="90%"></div>
-
-Stage 3 produces the distribution plot above — one histogram per DM feature after normalization, four per row. Colour encodes the transform:
-
-- **Orange — z-scored:** mean and variance fitted on training rows only, then applied to the full series; the held-out tail is normalized with training statistics and is not re-centred
-- **Green — ×10 linear scale:** applied to DXY return features whose raw values (~0.02) sit two orders of magnitude below the residual; the fixed scale preserves threshold semantics without data-dependent fitting
-- **Blue — no transformation:** features already on a natural or bounded scale (`years_since_halving`, Williams %R signals, and the `log_price_residual` target)
+| 5 — Evaluate | `pipeline/step_5_evaluate.py` | all of the above | `step5_rollout.csv`, `step5_fig_evaluation.png` |
 
 ```bash
 python pipeline/step_1_data_ingestion.py
@@ -165,48 +168,58 @@ Stages 1–3 are CPU/network bound; stage 4 uses CUDA if available and falls bac
 
 ## 5. Results
 
-### Training
+The baseline for both experiments is the **lag-1 persistence model**: predict the next residual as equal to the current one ($\hat{R}_{t+1} = R_t$). On the random val set (seed 42, 380 anchors) the lag-1 next-day MSE is **0.001215**.
 
-- **Loss:** MSE on `log_price_residual` at t+1
-- **Input:** 7 slices per anchor, nearest at 30 days — no access to recent prices
-- **Split:** last 365 calendar days held out as the test window; remainder randomly split 85/15 train/val
+### 5.1 Random-Split Experiment
 
-### MSE Baselines (training window, 3 815 rows)
+Training uses a random 90/10 split over the full DM dataset (`val_seed = 42`), drawing approximately 380 val samples from across the full history. The training objective is MSE over the joint 7-step horizon `t+1 … t+7`; the model–baseline comparison is evaluated on the **next-day (t+1) step only**.
 
-Reference points for interpreting `val_loss` during stage 4:
+| | Next-day MSE |
+|---|---|
+| MambaSSM | **0.001212** |
+| Lag-1 baseline | 0.001215 |
 
-| Baseline | MSE | Description |
+**Caveat:** the random split allows neighboring anchors with overlapping 7-day target windows to land on both sides of the train/val boundary. The val score is optimistic by construction and should be read as a training-control signal, not a clean generalization estimate.
+
+### 5.2 Chronological-Split Experiment
+
+A strict chronological 90/10 split reserves approximately one year as an uncontaminated hold-out. On this window the model did **not** reliably outperform the lag-1 baseline. In this experiment, training loss and validation loss started to diverge once reached 0.015, signifying overfit. 
+
+The `TARGET_VAL_LOSS ≤ 0.015` guardrail is derived from this experiment: it marks the level below which the random-split score enters overfit territory on the chronological hold-out.
+
+This repository retains only the production pipeline. The chronological evaluation scripts are not checked in.
+
+### 5.3 Synthetic Future Rollout
+
+Stage 5 performs a **synthetic future rollout** beyond the last observed date:
+
+- `years_since_halving` is computed deterministically for future dates
+- the six exogenous non-deterministic features are projected independently by separate cycle-aligned linear regressions
+- `log_price_residual` is forecast autoregressively and fed back into the next forecast window
+- forecast errors are therefore allowed to compound, by design
+
+<div align="center"><img src="./output/step5_fig_evaluation.png" width="90%"></div>
+
+The plot above is a **synthetic forward simulation**, not a held-out real-market evaluation. It visualizes how the residual forecast and reconstructed price behave when the model is rolled forward with projected exogenous inputs.
+
+| Metric | Value | Description |
 |---|---|---|
-| **Copy-lag-1** | **0.001312** | Predict residual[t+1] = residual[t]. Trivially achievable by memorising yesterday — the absolute floor. |
-| **Copy-lag-30** | **0.043819** | Predict residual[t+1] = residual[t−30]. The cheapest copy the model can make from its nearest input slice. |
-
-Interpreting `val_loss`:
-
-- **val_loss ≫ 0.0438** — model is not yet extracting useful signal from any slice
-- **val_loss well below 0.0438, above 0.0013** — model is using multi-feature context beyond a nearest-slice copy; target operating range
-- **val_loss approaching 0.0013** — model is achieving lag-1-equivalent accuracy using only 30-day-old information; strong result given it has no access to recent prices
-
-**Trained result: val_loss = 0.001213 at epoch 863/1000** — below the copy-lag-1 floor, using inputs whose nearest snapshot is 30 days old.
-
-### Evaluation (stage 5)
-
-Stage 5 runs an autoregressive rollout through the 365-day held-out test window:
-
-- Each predicted residual is fed back as input context for the next step
-- All other feature columns (volatility, macro, cycle, technical) use real observed data throughout
-- No synthetic future — the evaluation is grounded in real market conditions
-
-Metrics reported on the held-out test window:
-
-- **MAE** on the residual series
-- **Directional accuracy** vs the previous day's residual
-- **Copy-lag-30 MSE** as the naive baseline
-
-Price reconstruction adds the fitted log trend back to the predicted residuals, giving a USD price trajectory over the test window.
+| **Forecast start** | **2026-06-21** | First synthetic future date after the observed history |
+| **Forecast horizon** | **365 days** | Number of forward-simulated dates |
 
 ---
 
-## 6. Prior Work
+## 6. Conclusion
+
+This study is complete. MambaSSM demonstrated the strongest resistance to lag-1 degeneracy among all tested architectures and produced a well-behaved residual forecast, but the approach faces a fundamental data-availability constraint: the BTC daily series offers roughly 4,000 usable rows — too few to expose the model's capacity advantage over simpler methods in out-of-sample conditions.
+
+The companion [winrate-matrix](https://github.com/chengmarc/winrate-matrix) analysis found that threshold-based signals (low realized volatility, DXY regime) yield win rates of 89–99% at multi-month horizons without any learned parameters, outperforming the neural net on the chronological held-out window. Given this, further iteration on MambaSSM was discontinued.
+
+The checked-in artifacts — checkpoint, figures, and rollout CSV — document the final trained state. The stage-5 rollout is retained as a scenario projection, not a performance claim.
+
+---
+
+## 7. Prior Work
 
 Earlier in this project a set of recurrent and attention architectures were explored on the same forecasting task. They are not part of the maintained codebase but are summarised here for context.
 
@@ -222,7 +235,7 @@ RNN/LSTM baselines showed the most visible lag-1 tendency; Transformer and Mamba
 
 ---
 
-## 7. References
+## 8. References
 
 [1] Gu, A., & Dao, T. (2023). Mamba: Linear-Time Sequence Modeling with Selective State Spaces. *arXiv:2312.00752*. https://arxiv.org/abs/2312.00752
 
@@ -238,7 +251,7 @@ RNN/LSTM baselines showed the most visible lag-1 tendency; Transformer and Mamba
 
 ---
 
-## Implementation Note
+## 9. Implementation Note
 
 The MambaSSM block implementation (`src/ssm/arch/mamba.py`, `src/ssm/arch/scans.py`) is adapted from [johnma2006/mamba-minimal](https://github.com/johnma2006/mamba-minimal), a community reference implementation of [1]:
 

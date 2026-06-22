@@ -1,27 +1,33 @@
 {
-  "test_boundary": "2025-06-17",
-  "test_days": 366,
-  "slice_offsets": [
+  "data_start": "2015-01-06",
+  "data_end": "2026-06-20",
+  "n_rows": 4184,
+  "window_anchors": [
     365,
     180,
     90,
     75,
-    65,
-    55,
+    60,
+    45,
     30
   ],
-  "predict_window": 1,
+  "window_len": 7,
+  "predict_window": 7,
   "d_model": 32,
   "n_layer": 3,
+  "d_state": 16,
   "dropout": 0.1,
-  "best_epoch": 863,
-  "best_val_loss": 0.0012134572196587483,
+  "best_epoch": 10,
+  "best_val_loss": 0.01167839978976796,
   "run_config": {
     "epochs": 1000,
     "patience": 1000,
     "lr": 0.0003,
     "batch_size": 32,
-    "val_split": 0.15,
+    "val_split": 0.1,
+    "val_seed": 42,
+    "split_mode": "random_full_data",
+    "target_val_loss": 0.015,
     "weight_decay": 0.001
   }
 }

@@ -1,8 +1,9 @@
 """Stage 1 — data ingestion.
 
-Fetches raw BTC on-chain data (CoinMetrics), OHLCV (yfinance) and macro series
-(FRED and DXY), joins them on the CoinMetrics date spine, and writes the
-operational data store (ODS).
+Fetches BTC OHLCV and the DXY dollar index (yfinance) plus CoinMetrics PriceUSD,
+joins them on the CoinMetrics date spine, and writes the operational data store (ODS).
+PriceUSD reaches back further than yfinance BTC-USD (~Sep 2014) and is used only to
+backfill the early trend history in step_2; the spine must therefore stay CoinMetrics.
 
     Output: config.ODS_CSV
 """
@@ -28,7 +29,7 @@ def download_coinmetrics() -> pd.DataFrame:
     base_url = 'https://community-api.coinmetrics.io/v4/timeseries/asset-metrics'
     params = {
         'assets': 'btc',
-        'metrics': 'PriceUSD,HashRate,TxCnt,AdrActCnt,SplyCur,CapMVRVCur',
+        'metrics': 'PriceUSD',
         'frequency': '1d',
         'format': 'json',
         'page_size': '10000',
@@ -41,20 +42,10 @@ def download_coinmetrics() -> pd.DataFrame:
     df['Date'] = pd.to_datetime(df['time'], utc=True).dt.tz_localize(None)
     df = df.set_index('Date').sort_index()
     df = df.iloc[365 * 2:]  # skip first 2 years of sparse data
-    # Note: DiffLast / SplyAct30d / SplyAct1yr removed from the free CoinMetrics feed.
-    # HashRate is used in place of DiffLast (both track mining activity; difficulty
-    # adjusts to target hash rate, so the series are tightly coupled).
-    # CapMVRVCur (MVRV ratio) added — available in the current feed and useful signal.
-    cols = ['PriceUSD', 'HashRate', 'TxCnt', 'AdrActCnt', 'SplyCur', 'CapMVRVCur']
-    df[cols] = df[cols].apply(pd.to_numeric, errors='coerce')
-    return df[cols].rename(columns={
-        'PriceUSD':   'price_usd',
-        'HashRate':   'hash_rate',
-        'TxCnt':      'tx_cnt',
-        'AdrActCnt':  'adr_act_cnt',
-        'SplyCur':    'sply_cur',
-        'CapMVRVCur': 'mvrv',
-    })
+    # Only PriceUSD is retained — it backfills pre-2014 trend history in step_2 where
+    # yfinance BTC-USD has no data. The on-chain / MVRV metrics were never used and are dropped.
+    df['PriceUSD'] = pd.to_numeric(df['PriceUSD'], errors='coerce')
+    return df[['PriceUSD']].rename(columns={'PriceUSD': 'price_usd'})
 
 
 def download_ohlcv() -> pd.DataFrame:

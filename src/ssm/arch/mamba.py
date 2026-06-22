@@ -38,24 +38,31 @@ class ModelArgs:
 
 class MambaSSM(nn.Module):
 
-    def __init__(self, args: ModelArgs, input_dimension: int, n_horizons: int):
+    def __init__(self, args: ModelArgs, input_dimension: int, n_horizons: int, n_windows: int):
         super().__init__()
-        self.args = args
+        self.args      = args
+        self.n_windows = n_windows
 
         self.input_layer = nn.Linear(input_dimension, args.d_model)
         self.layers      = nn.ModuleList([ResidualBlock(args) for _ in range(args.n_layer)])
         self.norm_f      = RMSNorm(args.d_model)
         self.dropout     = nn.Dropout(args.dropout)
-        # One logit per prediction horizon.
-        self.head        = nn.Linear(args.d_model, n_horizons)
+        # Head sees the concatenated per-window embeddings → one value per horizon.
+        self.head        = nn.Linear(args.d_model * n_windows, n_horizons)
 
     def forward(self, x):
-        x    = self.input_layer(x)
+        # x: (batch, n_windows, window_len, features). Encode each window with the SHARED
+        # stack (so the recurrence only ever flows within a real consecutive window), then
+        # concatenate the per-window final states — distinct, position-aware.
+        b, w, l, f = x.shape
+        x    = self.input_layer(x.reshape(b * w, l, f))
         for layer in self.layers:
             x = layer(x)
         x    = self.norm_f(x)
-        last = self.dropout(x[:, -1, :])   # (batch, d_model) — richest context
-        return self.head(last)              # (batch, n_horizons) — raw logits
+        last = x[:, -1, :].reshape(b, w * self.args.d_model)   # concat window embeddings
+        last = self.dropout(last)
+        # (batch, 1, n_horizons, 1): 1 forward window, n_horizons days, 1 feature (residual).
+        return self.head(last).unsqueeze(1).unsqueeze(-1)
 
 
 class ResidualBlock(nn.Module):
@@ -127,11 +134,14 @@ class RMSNorm(nn.Module):
         return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps) * self.weight
 
 
-def create_model(data, n_horizons: int, device, d_model: int = 32, n_layer: int = 3, dropout: float = 0.1):
-    """Build a MambaSSM classifier for ``n_horizons`` binary direction outputs."""
-    input_dimension = len(data.columns)
-    args  = ModelArgs(d_model=d_model, n_layer=n_layer, dropout=dropout)
-    model = MambaSSM(args, input_dimension, n_horizons).to(device)
+def create_model(data, n_horizons: int, device, n_windows: int,
+                 d_model: int = 48, n_layer: int = 4, d_state: int = 32, dropout: float = 0.1):
+    """Build a hierarchical MambaSSM regressor: one shared encoder over n_windows windows,
+    concatenated, projecting to ``n_horizons`` residual outputs."""
+    input_dimension = len(data.columns) - 1   # last column is the target, excluded from inputs
+    args  = ModelArgs(d_model=d_model, n_layer=n_layer, d_state=d_state, dropout=dropout)
+    model = MambaSSM(args, input_dimension, n_horizons, n_windows).to(device)
     print(f'MambaSSM initialised — input_dim={input_dimension}  d_model={d_model}  '
-          f'n_layer={n_layer}  dropout={dropout}  n_horizons={n_horizons}')
+          f'n_layer={n_layer}  d_state={d_state}  dropout={dropout}  '
+          f'n_windows={n_windows}  n_horizons={n_horizons}')
     return model
